@@ -1,0 +1,26 @@
+# Environments
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.hypothesis/
+.ruff_cache/
+
+# Compiled acceleration kernels (built lazily, cached per machine)
+*.so
+src/density/_accel/_build/
+
+# Generated data: synth corpora, stores, reports produced during development
+/raw/
+/raw.density/
+*.density/
+report.html
+report.md
+/scratch/
+
+# OS noise
+.DS_Store
