@@ -41,6 +41,8 @@ def recall_at_k(gt: np.ndarray, pred: np.ndarray, k: int) -> float:
     if pred.shape[1] < k:
         raise ValueError(f"prediction has only {pred.shape[1]} columns, need k={k}")
     nq = gt.shape[0]
+    if nq == 0:
+        raise ValueError("gt and pred are empty: at least one query row is required")
     # intersect1d uniques both sides, so accidental duplicate ids in a row
     # can never push a query's recall above 1.0.
     hits = 0

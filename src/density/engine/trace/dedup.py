@@ -146,9 +146,29 @@ def _utf8(text: str) -> bytes:
 # 64-bit prime, odd so multiplication is a bijection mod 2**64).
 _K = np.uint64(0x100000001B3)
 
-# Shingle-free texts (normalized encoding shorter than 5 bytes) get one
-# shared sentinel shingle so their signatures are defined and identical.
-_EMPTY_SENTINEL = np.uint64(0x9E3779B97F4A7C15)
+# Placeholder fill for the per-position hash buffer. Every slot is
+# overwritten before use: real windows by the scatter, shingle-free
+# segments by _short_text_hash.
+_FILL = np.uint64(0x9E3779B97F4A7C15)
+
+
+def _short_text_hash(enc: bytes) -> np.uint64:
+    """One stand-in shingle hash for a text with no complete 5-gram.
+
+    enc: the full normalized utf-8 encoding, at most 4 bytes here. The
+    value must be a function of those bytes, never a shared constant:
+    with a shared sentinel, every shingle-free text would get the same
+    signature and unrelated short bodies (trace lines that are mostly
+    stripped uuids and timestamps around a short status token) would
+    cluster at estimated jaccard 1.0. Seeding the accumulator with the
+    length keeps b"\\x00" and b"\\x00\\x00" distinct under Horner.
+    """
+    # Python ints with an explicit 64-bit mask: numpy uint64 scalars warn
+    # on overflow, and this loop runs over at most 4 bytes.
+    acc = len(enc) + 1
+    for byte in enc:
+        acc = (acc * int(_K) + byte) & 0xFFFFFFFFFFFFFFFF
+    return _mix64(np.array([acc], dtype=np.uint64))[0]
 
 # Texts are batched so at most about this many shingle hashes are alive
 # at once; the per-permutation temporaries are then one [shingles] uint64
@@ -281,10 +301,10 @@ class MinHashLSH:
         lens = np.array([len(e) for e in encoded], dtype=np.int64)
         n_windows = np.maximum(lens - (_SHINGLE - 1), 0)
         # Every text owns a non-empty hash segment: its windows, or one
-        # sentinel slot, so reduceat segment starts are strictly increasing.
+        # stand-in slot, so reduceat segment starts are strictly increasing.
         seg_sizes = np.maximum(n_windows, 1)
         seg_starts = np.cumsum(seg_sizes) - seg_sizes
-        hashes = np.full(int(seg_sizes.sum()), _EMPTY_SENTINEL, dtype=np.uint64)
+        hashes = np.full(int(seg_sizes.sum()), _FILL, dtype=np.uint64)
 
         buf = np.frombuffer(b"".join(encoded), dtype=np.uint8)
         if buf.size >= _SHINGLE:
@@ -309,6 +329,13 @@ class MinHashLSH:
                 src = np.repeat(offsets[has], reps) + pos
                 dst = np.repeat(seg_starts[has], reps) + pos
                 hashes[dst] = acc[src]
+
+        # Shingle-free texts get a stand-in hash derived from their full
+        # normalized bytes, so only normalized-equal texts can share a
+        # signature. Rare (encoding under 5 bytes), so a Python loop is
+        # fine here.
+        for i in np.flatnonzero(n_windows == 0):
+            hashes[seg_starts[i]] = _short_text_hash(encoded[i])
 
         # Collapse each segment to its distinct hash values before the
         # permutation loop: a permutation is a function of the hash, so
@@ -354,6 +381,10 @@ class MinHashLSH:
         """
         a = np.asarray(sig_a)
         b = np.asarray(sig_b)
+        if a.size == 0 or a.shape != b.shape:
+            raise ValueError(
+                f"signatures must be non-empty and same-shape, got {a.shape} and {b.shape}"
+            )
         return float(np.count_nonzero(a == b)) / float(a.size)
 
     def cluster(self, sigs: np.ndarray) -> list[list[int]]:

@@ -812,8 +812,8 @@ def generate(
     arguments produce byte-identical files. Total bytes land within 5
     percent of the target (embeddings are sized first, traces fill the
     remainder to within a few kilobytes). Raises ValueError on
-    non-positive gb, dim, or n_vectors, and when the embeddings alone
-    would exceed the byte target.
+    non-positive gb, dim, or n_vectors, and when the embeddings would
+    leave less than 64 KB of the byte target for traces.
     """
     if gb <= 0:
         raise ValueError(f"gb must be positive, got {gb}")

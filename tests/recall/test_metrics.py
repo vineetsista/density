@@ -109,3 +109,9 @@ class TestBytesAccount:
     def test_equality(self) -> None:
         assert BytesAccount(1, 2, 3) == BytesAccount(1, 2, 3)
         assert BytesAccount(1, 2, 3) != BytesAccount(1, 2, 4)
+
+
+def test_recall_at_k_empty_queries_raises() -> None:
+    empty = np.empty((0, 10), dtype=np.int64)
+    with pytest.raises(ValueError, match="at least one query"):
+        recall_at_k(empty, empty, k=10)

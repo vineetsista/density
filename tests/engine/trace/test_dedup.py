@@ -432,3 +432,41 @@ def test_signatures_agree_under_tiny_batch_budget(
     monkeypatch.setattr(dedup_module, "_BATCH_SHINGLE_BUDGET", 17)
     got = MinHashLSH(seed=SEED).signatures(texts)
     assert np.array_equal(want, got)
+
+
+def test_shingle_free_texts_with_different_bodies_do_not_cluster() -> None:
+    # Both lines are minhash-eligible (raw length over MINHASH_MIN_CHARS)
+    # but normalize down to a two-letter status token because everything
+    # else is stripped uuids and timestamps. With a shared sentinel they
+    # would collide at estimated jaccard 1.0; the stand-in hash must be a
+    # function of the normalized bytes instead.
+    noise = (
+        "123e4567-e89b-12d3-a456-426614174000 "
+        "f47ac10b-58cc-4372-a567-0e02b2c3d479 2026-08-03T12:00:00Z"
+    )
+    ok = f"ok {noise}"
+    no = f"no {noise}"
+    assert len(ok) > MINHASH_MIN_CHARS and len(no) > MINHASH_MIN_CHARS
+    assert normalize(ok) != normalize(no)
+    result = find_clusters([ok, no])
+    assert all(not {0, 1} <= set(c) for c in result.clusters)
+
+
+def test_shingle_free_texts_with_equal_normalized_bodies_share_signature() -> None:
+    # Byte-different lines whose normalized forms are equal (same status
+    # token, different uuids) must still get identical signatures: that
+    # is the near-duplicate semantics the sentinel path exists for.
+    a = "OK 123e4567-e89b-12d3-a456-426614174000 2026-08-03T12:00:00Z"
+    b = "ok f47ac10b-58cc-4372-a567-0e02b2c3d479 2026-08-04T09:30:00Z"
+    assert normalize(a) == normalize(b)
+    lsh = MinHashLSH(seed=SEED)
+    assert np.array_equal(lsh.signature(a), lsh.signature(b))
+
+
+def test_estimated_jaccard_rejects_empty_or_mismatched_signatures() -> None:
+    sig = MinHashLSH(seed=SEED).signature("a perfectly ordinary sentence for hashing")
+    empty = np.empty(0, dtype=np.int64)
+    with pytest.raises(ValueError):
+        MinHashLSH.estimated_jaccard(empty, empty)
+    with pytest.raises(ValueError):
+        MinHashLSH.estimated_jaccard(sig, sig[: NUM_PERM // 2])
