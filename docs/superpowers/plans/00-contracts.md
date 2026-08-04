@@ -254,10 +254,17 @@ Compiled and fallback results agree within 1e-5 relative.
   def verify_tiers(X, codecs: dict[str, VectorCodec], seed=1337,
                    n_queries=1000, sample_cap=200_000,
                    rerank_depths: dict[str, int] | None = None,
-                   reranker=None) -> VerifyResult
+                   reranker=None,
+                   reranker_factory: Callable[[np.ndarray], Reranker] | None
+                       = None) -> VerifyResult
       # Splits queries out of X (leave-out, seeded), samples the corpus to
       # sample_cap if larger, computes recall@1/10/100 per codec, bytes per
       # vector per codec. VerifyResult.to_dict() is JSON-serializable.
+      # When a codec's rerank depth is positive, the reranker resolves in
+      # order: the explicit reranker argument, reranker_factory(X_db) built
+      # on the leave-out database vectors, then ExactReranker(X_db) as the
+      # honest fallback. reranker_factory exists because a Reranker needs
+      # the post-split database, which only verify_tiers knows.
   # default rerank depths: pq: 200, binary: 500, sq8: 0
   ```
 
