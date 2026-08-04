@@ -215,3 +215,33 @@ def test_rerank_path_uses_reranker_scores(unit_vectors: np.ndarray) -> None:
     assert np.all(np.diff(scores[0]) <= 0)
     # Returned scores must be the reranker's exact scores for the returned ids.
     assert np.allclose(scores[0], x[ids[0]] @ q, atol=1e-5)
+
+
+def test_rerank_depth_widens_to_k(unit_vectors: np.ndarray) -> None:
+    """Regression: k > rerank_depth used to crash with a broadcast error.
+
+    The output has min(k, n) columns, so the candidate pool must be
+    widened to at least that many rows before reranking, exactly as the
+    binary codec already does.
+    """
+
+    class _ExactStub:
+        def __init__(self, x: np.ndarray) -> None:
+            self.x = x
+
+        def score(self, q: np.ndarray, ids: np.ndarray) -> np.ndarray:
+            return (self.x[ids] @ q).astype(np.float32)
+
+    x = unit_vectors
+    n = x.shape[0]
+    pq = PQ(m=8).fit(x, seed=SEED)
+    pq.add(x)
+    q = x[3]
+    ids, scores = pq.search(q, k=50, rerank_depth=10, reranker=_ExactStub(x))
+    assert ids.shape == (1, 50) and scores.shape == (1, 50)
+    assert np.all(np.diff(scores[0]) <= 0)
+    assert np.allclose(scores[0], x[ids[0]] @ q, atol=1e-5)
+    # k beyond n clamps to n and must still not outrun the widened pool.
+    ids_all, scores_all = pq.search(q, k=n + 50, rerank_depth=10, reranker=_ExactStub(x))
+    assert ids_all.shape == (1, n) and scores_all.shape == (1, n)
+    assert len(np.unique(ids_all[0])) == n

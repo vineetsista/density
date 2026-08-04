@@ -40,6 +40,7 @@ Design choices, v1:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import warnings
@@ -49,9 +50,11 @@ from typing import Callable, Iterator
 
 import numpy as np
 import pyarrow.parquet as papq
+import zstandard
 
 from density.engine.embed import topk
 from density.engine.embed.binary import BinaryCodec
+from density.engine.embed.matryoshka import truncate as matryoshka_truncate
 from density.engine.embed.pq import PQ
 from density.engine.embed.rerank import ExactReranker, Reranker, SQ8Reranker
 from density.engine.embed.sq8 import SQ8
@@ -130,7 +133,11 @@ def _parse_json_vector(text: str) -> np.ndarray | None:
     """
     try:
         obj = json.loads(text)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
+        # ValueError covers JSONDecodeError (its subclass) plus other
+        # parser rejections. RecursionError guards pathological nesting
+        # like "[" * 100000: both json scanners recurse per bracket and
+        # blow the stack long before deciding the text is invalid.
         return None
     if (
         isinstance(obj, list)
@@ -277,13 +284,24 @@ class Store:
         stats = IngestStats()
         quarantined: list[QuarantineEntry] = []
         seen_files: set[str] = set()
+        # Identity of the corpus content, not its path: length-prefixed
+        # (relpath, payload) records make the digest unambiguous, and the
+        # sorted-relpath iteration order of iter_events makes it
+        # deterministic for a given corpus.
+        corpus_id = hashlib.sha256()
 
         def observed() -> Iterator[ParsedLine]:
-            # One pass feeds the shredder and the counters at once, so a
-            # multi-gigabyte corpus is read exactly one time.
+            # One pass feeds the shredder, the counters, and the corpus
+            # digest at once, so a multi-gigabyte corpus is read exactly
+            # one time.
             for parsed in iter_events(src):
                 stats.observe(parsed)
                 seen_files.add(parsed.file)
+                fb = parsed.file.encode("utf-8")
+                corpus_id.update(len(fb).to_bytes(4, "little"))
+                corpus_id.update(fb)
+                corpus_id.update(len(parsed.raw).to_bytes(8, "little"))
+                corpus_id.update(parsed.raw)
                 if parsed.event is None and len(quarantined) < _QUARANTINE_CAP:
                     quarantined.append(
                         QuarantineEntry(
@@ -297,12 +315,21 @@ class Store:
         shred_events(observed(), out_dir, level=int(spec.trace_zstd_level), seed=self._seed)
 
         m = self._manifest
-        m.datasets.traces.files = sorted(set(m.datasets.traces.files) | seen_files)
-        m.datasets.traces.events += stats.events
-        m.datasets.traces.malformed += stats.malformed
-        m.datasets.traces.raw_bytes += stats.bytes_read
-        m.quarantine.extend(quarantined)
-        del m.quarantine[_QUARANTINE_CAP:]
+        tr = m.datasets.traces
+        tr.files = sorted(set(tr.files) | seen_files)
+        source_id = corpus_id.hexdigest()
+        if source_id not in tr.sources:
+            # First sighting of this corpus content: fold it into the
+            # dataset ledger. A second tier ingesting the same corpus
+            # keeps its own accurate per-call IngestStats, but must not
+            # double the dataset totals the audit divides by, or every
+            # compression ratio would be overstated about 2x.
+            tr.sources = sorted([*tr.sources, source_id])
+            tr.events += stats.events
+            tr.malformed += stats.malformed
+            tr.raw_bytes += stats.bytes_read
+            m.quarantine.extend(quarantined)
+            del m.quarantine[_QUARANTINE_CAP:]
 
         entry = self._tier_entry(t)
         entry.traces_dir = rel_dir
@@ -323,29 +350,71 @@ class Store:
 
         Bytes are per line, trailing newline excluded; a CR from CRLF
         input is part of the payload and is preserved. Raises StoreError
-        when the store holds no traces or the trace_id is unknown.
+        when the store holds no traces, the trace_id is unknown, a bundle
+        file is corrupt (run verify() to identify it), or the trace_id
+        exists in tiers loaded from different corpora with differing
+        lines, because replay cannot know which sequence is the real
+        trace. Known v1 limitation: a trace_id containing a lone
+        surrogate is unreachable by its true id, because parquet stores
+        the backslashreplace form of the id.
         """
         self._require_open()
         searched = False
+        # Every tier holding traces is consulted, because put_traces may
+        # legally have loaded warm and cold from different corpora. Tiers
+        # whose parquet does not mention the trace_id cost one cheap
+        # scalar-column read and are skipped without any decompression.
+        holdings: list[tuple[Tier, list[bytes]]] = []
         for t in _TRACE_TIER_ORDER:
             entry = self._manifest.tiers.get(t.value)
             if entry is None or entry.traces_dir is None:
                 continue
             searched = True
             bundle = self._dir / entry.traces_dir
-            # The parquet scalar columns locate the trace's (file, line)
-            # set cheaply; the bytes themselves always come from unshred,
-            # which is the code path whose byte-exactness is proven.
-            wanted = self._trace_rows(bundle, trace_id)
-            if wanted:
-                return [
+            try:
+                # The parquet scalar columns locate the trace's (file, line)
+                # set cheaply; the bytes themselves always come from unshred,
+                # which is the code path whose byte-exactness is proven.
+                wanted = self._trace_rows(bundle, trace_id)
+                if not wanted:
+                    continue
+                lines = [
                     raw
                     for file, line_index, raw in unshred(bundle)
                     if (file, line_index) in wanted
                 ]
+            except StoreError:
+                raise
+            except (zstandard.ZstdError, OSError, KeyError, ValueError) as exc:
+                # Decode failures (zstd corruption, truncated parquet,
+                # missing files) are store problems, not caller problems:
+                # translate them so no foreign exception type leaks.
+                raise StoreError(
+                    f"cannot read {t.value} trace bundle {bundle}: {exc}. "
+                    "A bundle file may be corrupt: run Store.verify() to "
+                    "list files whose checksums no longer match."
+                ) from exc
+            holdings.append((t, lines))
         if not searched:
             raise StoreError("store holds no traces: call put_traces first")
-        raise StoreError(f"unknown trace_id: {trace_id!r}")
+        if not holdings:
+            raise StoreError(f"unknown trace_id: {trace_id!r}")
+        first_tier, first_lines = holdings[0]
+        for other_tier, other_lines in holdings[1:]:
+            # Identical holdings (the common same-corpus-in-both-tiers
+            # case) keep the fast path: return the warm copy. Differing
+            # holdings mean the tiers were loaded from different corpora
+            # and truncating to one tier would silently drop lines.
+            if other_lines != first_lines:
+                raise StoreError(
+                    f"trace {trace_id!r} exists in both the "
+                    f"{first_tier.value} and {other_tier.value} tiers with "
+                    "different lines: the tiers were loaded from different "
+                    "corpora, and replay cannot know which sequence is the "
+                    "real trace. Rebuild the store with every tier "
+                    "ingesting the same corpus."
+                )
+        return first_lines
 
     def replay(self, trace_id: str) -> list[dict]:
         """Parsed original events of one trace, in original line order.
@@ -379,6 +448,7 @@ class Store:
         vectors: np.ndarray,
         tier: Tier | str = "warm",
         codec: str | None = None,
+        matryoshka_dims: int | None = None,
     ) -> None:
         """Encode and persist one tier's vectors with their original ids.
 
@@ -388,6 +458,12 @@ class Store:
         similarities. tier: 'hot' stores the fp32 originals, 'warm'
         encodes with SQ8, 'cold' with PQ. codec: optional cold-only
         override 'binary' (32x codes at a 0.90 recall floor with rerank).
+        matryoshka_dims: optional, off by default; when set, vectors are
+        truncated to their first matryoshka_dims dimensions and
+        re-normalized (engine.embed.matryoshka) before fit/encode. The
+        value is recorded in the tier entry, and search truncates query
+        vectors for that tier the same way. Requires 1 <= matryoshka_dims
+        <= d, plus the codec's own dim constraints in the truncated space.
 
         v1 allows a single put_embeddings call per tier: batch all
         vectors into one call. A second call raises StoreError.
@@ -428,11 +504,19 @@ class Store:
             )
         n, d = X.shape
         m = self._manifest
+        # The store dim is the input dim, pre-truncation: queries always
+        # arrive full-width and are truncated per tier at search time, so
+        # every tier must ingest the same original dimensionality.
         if m.datasets.embeddings.dim and m.datasets.embeddings.dim != d:
             raise StoreError(
                 f"vectors dim {d} does not match store dim {m.datasets.embeddings.dim}"
             )
         Xn = l2_normalize(X)
+        if matryoshka_dims is not None:
+            try:
+                Xn = matryoshka_truncate(Xn, int(matryoshka_dims))
+            except ValueError as exc:
+                raise StoreError(f"bad matryoshka_dims: {exc}") from exc
 
         codec_name = spec_for(t, codec).vector_codec  # None for hot
         rel_dir = f"tiers/{t.value}/vectors"
@@ -461,7 +545,9 @@ class Store:
                 fname = "codes.npy" if key == "codes" else f"state.{key}.npy"
                 np.save(out / fname, _little_endian(np.ascontiguousarray(arr)))
                 arrays[key] = fname
-            meta = {"codec": codec_name, "arrays": arrays, "count": n, "dim": d}
+            # dim is the encoded dim: it equals d unless matryoshka
+            # truncation shrank the vectors before the codec saw them.
+            meta = {"codec": codec_name, "arrays": arrays, "count": n, "dim": int(Xn.shape[1])}
             (out / _STATE_FILE).write_text(
                 json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8"
             )
@@ -481,6 +567,9 @@ class Store:
         entry.vector_codec = codec_name
         entry.vectors_file = vectors_rel
         entry.codec_state_file = state_rel
+        entry.matryoshka_dims = (
+            int(matryoshka_dims) if matryoshka_dims is not None else None
+        )
         entry.bytes.vectors = enc_bytes
         entry.bytes.vectors_aux = aux_bytes
         self._retotal(entry)
@@ -517,9 +606,11 @@ class Store:
         id dtype and scores float32 [k']; for a [nq, d] query, [nq, k'].
         k' = min(k, stored count). Scores are cosine similarities,
         best-first (negative hamming for a cold binary tier without a
-        reranker).
+        reranker). k < 1 raises StoreError. A tier ingested with
+        matryoshka_dims truncates the query the same way before scoring.
         """
         self._require_open()
+        self._validate_k(k)
         if isinstance(query, str):
             if self._embedder is None:
                 raise StoreError(
@@ -541,6 +632,13 @@ class Store:
         if Q.shape[1] != dim:
             raise StoreError(f"query dim {Q.shape[1]} does not match store dim {dim}")
         Qn = l2_normalize(Q)
+        tier_dims = self._matryoshka_dims(t)
+        if tier_dims is not None:
+            # The tier stored truncated-and-renormalized vectors, so the
+            # query must be projected into the same space for scores to
+            # remain cosines there. Truncation happens after normalizing
+            # exactly as it did at ingest.
+            Qn = matryoshka_truncate(Qn, tier_dims)
 
         if isinstance(payload, np.ndarray):
             row_ids, scores = self._exact_search(payload, Qn, k)
@@ -577,8 +675,10 @@ class Store:
         or, when none is configured, the demo HashingEmbedder does, with
         a one-time warning, because keyword hashing is not a semantic
         model. Returns (ids [k'], scores float32 [k']) as in search.
+        k < 1 raises StoreError before any embedding work runs.
         """
         self._require_open()
+        self._validate_k(k)
         vec = _parse_json_vector(query)
         if vec is None:
             fn = self._embedder
@@ -599,7 +699,39 @@ class Store:
             vec = np.asarray(fn(query), dtype=np.float32)
         return self.search(vec, k=k, tier=tier)
 
+    # -- integrity -----------------------------------------------------
+
+    def verify(self) -> list[str]:
+        """Re-hash every checksummed file, return the mismatched relpaths.
+
+        An empty list means every file referenced by the manifest still
+        matches its recorded sha256; a non-empty list names corrupted or
+        missing files. This is an explicit call, not part of open(),
+        because hashing a multi-gigabyte store on every open would tax
+        the common path for a rare failure; Phase 4's audit calls it as
+        part of every report, which is where the cost belongs.
+        """
+        self._require_open()
+        return self._manifest.verify_checksums(self._dir)
+
     # -- internals -----------------------------------------------------
+
+    @staticmethod
+    def _validate_k(k: int) -> None:
+        """Reject k < 1 uniformly, before any tier-specific code runs.
+
+        Without this guard the failure mode depends on the tier: exact
+        and sq8 searches would quietly return empty arrays while cold PQ
+        crashes allocating a negative-width output. A k below 1 is always
+        a caller bug, so it fails loudly and identically everywhere.
+        """
+        if int(k) < 1:
+            raise StoreError(f"k must be at least 1, got {k}")
+
+    def _matryoshka_dims(self, t: Tier) -> int | None:
+        """The tier's recorded matryoshka truncation, None for full dim."""
+        entry = self._manifest.tiers.get(t.value)
+        return None if entry is None else entry.matryoshka_dims
 
     def _tier_entry(self, t: Tier) -> TierEntry:
         entry = self._manifest.tiers.get(t.value)
@@ -670,7 +802,9 @@ class Store:
                 payload = _CODEC_CLASSES[meta["codec"]].from_state(state)
         except (OSError, KeyError, ValueError) as exc:
             raise StoreError(
-                f"cannot load {t.value} vectors from {vec_dir}: {exc}"
+                f"cannot load {t.value} vectors from {vec_dir}: {exc}. "
+                "A file may be corrupt: run Store.verify() to list files "
+                "whose checksums no longer match."
             ) from exc
         self._vector_cache[t] = (payload, ids_arr)
         return payload, ids_arr
@@ -680,22 +814,33 @@ class Store:
 
         Alignment means the candidate tier stored the same ids in the
         same order, which is what makes its row indices meaningful for
-        the target's candidates. Warm SQ8 codes win over hot fp32 by
-        policy: they are 4x smaller to touch and already carry the 0.99
-        recall floor, which is plenty for rescoring a shortlist.
+        the target's candidates, and the same matryoshka_dims, because
+        the reranker receives the target tier's (possibly truncated)
+        query and scores it against its own stored vectors: mismatched
+        truncation would crash on shape or silently score in the wrong
+        space. Warm SQ8 codes win over hot fp32 by policy: they are 4x
+        smaller to touch and already carry the 0.99 recall floor, which
+        is plenty for rescoring a shortlist.
         """
+        target_dims = self._matryoshka_dims(target)
         if target is not Tier.WARM and self._has_vectors(Tier.WARM):
             loaded = self._load_tier_vectors(Tier.WARM)
             if loaded is not None:
                 payload, warm_ids = loaded
-                if isinstance(payload, SQ8) and self._ids_aligned(warm_ids, target_ids):
+                if (
+                    isinstance(payload, SQ8)
+                    and self._ids_aligned(warm_ids, target_ids)
+                    and self._matryoshka_dims(Tier.WARM) == target_dims
+                ):
                     return SQ8Reranker(payload)
         if target is not Tier.HOT and self._has_vectors(Tier.HOT):
             loaded = self._load_tier_vectors(Tier.HOT)
             if loaded is not None:
                 payload, hot_ids = loaded
-                if isinstance(payload, np.ndarray) and self._ids_aligned(
-                    hot_ids, target_ids
+                if (
+                    isinstance(payload, np.ndarray)
+                    and self._ids_aligned(hot_ids, target_ids)
+                    and self._matryoshka_dims(Tier.HOT) == target_dims
                 ):
                     return ExactReranker(payload)
         return None

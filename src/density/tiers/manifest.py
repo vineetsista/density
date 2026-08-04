@@ -27,6 +27,12 @@ class TraceDataset(BaseModel):
     events: int = 0
     malformed: int = 0
     raw_bytes: int = 0
+    # sha256 identities (sorted hex digests) of every distinct corpus whose
+    # counters were folded into the totals above. Content-derived rather
+    # than path-derived on purpose: the same corpus ingested into a second
+    # tier must not double the dataset ledger, and a path identity would
+    # break byte-identical manifests across build directories.
+    sources: list[str] = Field(default_factory=list)
 
 
 class EmbeddingDataset(BaseModel):
@@ -57,6 +63,10 @@ class TierEntry(BaseModel):
     vectors_file: str | None = None       # relative path to encoded vectors
     traces_dir: str | None = None         # relative path to shredded traces
     trace_zstd_level: int | None = None
+    # Leading dimensions kept by matryoshka truncation at ingest, None for
+    # the full input dim. Search must truncate queries for this tier the
+    # same way, so the value is store state, not a transient option.
+    matryoshka_dims: int | None = None
     bytes: TierBytes = Field(default_factory=TierBytes)
 
 

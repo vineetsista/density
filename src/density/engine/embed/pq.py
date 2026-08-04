@@ -162,7 +162,8 @@ class PQ:
         stored codes. Scores are dot-product similarities reconstructed
         through the codebooks (cosine, since inputs are normalized
         upstream). rerank_depth > 0 rescores the ADC top rerank_depth
-        candidates with the given reranker and returns its top k.
+        candidates (widened to at least k, capped at n) with the given
+        reranker and returns its top k.
         """
         cb = self._require_fitted()
         codes = self._codes
@@ -179,6 +180,12 @@ class PQ:
         n = codes.shape[0]
         nq = Q.shape[0]
         k_eff = min(k, n)
+        # Widen the candidate pool to at least k_eff (and at most n): the
+        # output has k_eff columns, so a depth below k_eff would leave the
+        # rerank returning fewer rows than the slots it must fill, which
+        # used to crash with a broadcast error for any k > rerank_depth.
+        # Mirrors binary.py's widening so both cold codecs agree.
+        depth = min(max(int(rerank_depth), k_eff), n)
         ids = np.empty((nq, k_eff), dtype=np.int64)
         scores = np.empty((nq, k_eff), dtype=np.float32)
         for i in range(nq):
@@ -192,7 +199,7 @@ class PQ:
                 # must not be a hard dependency of ADC-only search.
                 from density.engine.embed.rerank import rerank_topk
 
-                cand, _ = _topk_desc(adc, min(rerank_depth, n))
+                cand, _ = _topk_desc(adc, depth)
                 r_ids, r_scores = rerank_topk(Q[i], cand, reranker, k_eff)
                 ids[i] = r_ids
                 scores[i] = r_scores

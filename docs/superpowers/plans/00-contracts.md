@@ -215,8 +215,10 @@ Compiled and fallback results agree within 1e-5 relative.
   ```
 - manifest.py: pydantic model `Manifest` with `format_version`, `created_at`
   (caller-supplied, deterministic in tests), `seed`, `datasets` (traces:
-  files, events, malformed, raw bytes; embeddings: count, dim, source),
-  `tiers` (per tier: paths, codec state file, bytes accounting), `dedup`
+  files, events, malformed, raw bytes, sources: content sha256 identities
+  of every distinct counted corpus; embeddings: count, dim, source),
+  `tiers` (per tier: paths, codec state file, matryoshka dims, bytes
+  accounting), `dedup`
   (cluster count, exact dup groups, bytes saved, top clusters with samples
   truncated to 120 chars), `checksums` (sha256 of every referenced file),
   `versions` (density, numpy, pyarrow, zstandard). `save(dir)`, `load(dir)`;
@@ -226,7 +228,9 @@ Compiled and fallback results agree within 1e-5 relative.
   density.open(path) -> Store        # creates if missing (path.endswith
                                      # convention not required, any dir)
   Store.put_traces(jsonl_path, tier=Tier.COLD) -> IngestStats
-  Store.put_embeddings(ids, vectors, tier="warm") -> None
+  Store.put_embeddings(ids, vectors, tier="warm", codec=None,
+                       matryoshka_dims=None) -> None
+  Store.verify() -> list[str]        # relpaths whose sha256 no longer matches
   Store.search(query, k=10, tier=None) -> (ids, scores)
       # query: np.ndarray vector, or str if an embedder callable was
       # configured via Store.set_embedder(fn); tier=None picks the best
@@ -268,6 +272,35 @@ Compiled and fallback results agree within 1e-5 relative.
     avoided: its zip container embeds timestamps and would break
     deterministic checksums). Every referenced file gets a sha256 entry
     in the manifest.
+  - `search` and `search_cli` reject k < 1 with StoreError: without the
+    guard, warm quietly returns empty arrays while cold PQ crashes on a
+    negative output width, so the misuse fails loudly and identically.
+  - `put_embeddings(..., matryoshka_dims=N)` (default None, off)
+    truncates vectors to their first N dimensions and re-normalizes via
+    engine/embed/matryoshka before fit/encode, records N in the tier
+    entry, and search truncates query vectors for that tier the same
+    way. Cross-tier rerank requires equal matryoshka_dims on both tiers
+    in addition to identical id sequences.
+  - Dataset-level trace counters (events, malformed, raw_bytes) count
+    each distinct corpus exactly once, identified by a content sha256
+    recorded in `datasets.traces.sources`: ingesting the same corpus
+    into a second tier keeps its accurate per-call IngestStats without
+    doubling the ledger the audit divides by. Identity is content-based,
+    not path-based, so manifests stay byte-identical across build
+    directories.
+  - Corrupt store files surface on read as StoreError naming the file
+    and suggesting `Store.verify()`, which re-hashes every checksummed
+    file (Manifest.verify_checksums) and returns the mismatched
+    relpaths. open() and reads never hash the whole store, because
+    paying gigabytes of hashing on every open for a rare failure is the
+    wrong trade; Phase 4's audit calls verify() as part of every report.
+  - `replay_raw` consults every tier holding the trace_id: identical
+    holdings replay from warm (the fast path), differing holdings, which
+    happen when tiers were legally loaded from different corpora, raise
+    StoreError naming the split-corpora ambiguity instead of silently
+    truncating the trace. A trace_id containing a lone surrogate is
+    unreachable by its true id (parquet stores the backslashreplace
+    form), documented as a v1 limitation.
 
 ## recall/
 

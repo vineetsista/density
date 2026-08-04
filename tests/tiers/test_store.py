@@ -388,3 +388,202 @@ def test_open_rejects_file_path(tmp_path):
     blob.write_text("x")
     with pytest.raises(StoreError, match="directory"):
         density.open(blob)
+
+
+# -- adversarial review regressions ------------------------------------
+
+
+def _jline(obj: dict) -> bytes:
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def test_cold_search_k_beyond_rerank_depth(tmp_path):
+    """Regression: cold PQ search crashed for any k > policy rerank depth.
+
+    The rerank candidate pool must widen to at least k, so asking for
+    250 of 400 rows (depth 200) returns 250 rows instead of a broadcast
+    ValueError, and k > n clamps to n.
+    """
+    x, q = make_vectors(n=400)
+    ids_in = int_ids(400)
+    with open_store(tmp_path / "s.density") as store:
+        store.put_embeddings(ids_in, x, tier="warm")
+        store.put_embeddings(ids_in, x, tier="cold")
+        ids, scores = store.search(q, k=250, tier="cold")
+        assert ids.shape == (250,)
+        assert scores.shape == (250,)
+        assert ids[0] == 1000 + PLANTED_ROW
+        assert np.all(np.diff(scores) <= 1e-5)
+        ids_all, _ = store.search(q, k=500, tier="cold")
+        assert ids_all.shape == (400,)
+        assert len(np.unique(ids_all)) == 400
+
+
+def test_dataset_counters_count_distinct_corpus_once(tmp_path):
+    """Regression: warm plus cold of one corpus doubled the dataset ledger.
+
+    Per-call IngestStats stay per call; the dataset totals must describe
+    the distinct corpus, or audit compression ratios inflate about 2x.
+    """
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    lines = [
+        _jline({"trace_id": "t1", "ts": i, "role": "user", "type": "message",
+                "content": f"c{i}"})
+        for i in range(10)
+    ]
+    (corpus / "a.jsonl").write_bytes(b"\n".join(lines) + b"\n")
+    payload = sum(len(line) for line in lines)
+    with open_store(tmp_path / "s.density") as store:
+        stats_warm = store.put_traces(corpus, tier="warm")
+        stats_cold = store.put_traces(corpus, tier="cold")
+        # Identical holdings in both tiers replay fine (the fast path).
+        assert store.replay_raw("t1") == lines
+    assert stats_warm.events == stats_cold.events == 10
+    m = Manifest.load(tmp_path / "s.density")
+    assert m.datasets.traces.events == 10
+    assert m.datasets.traces.malformed == 0
+    assert m.datasets.traces.raw_bytes == payload
+    assert len(m.datasets.traces.sources) == 1
+
+
+def test_verify_reports_corrupted_file(tmp_path):
+    """Store.verify() re-hashes checksummed files and names the bad ones."""
+    x, _ = make_vectors()
+    with open_store(tmp_path / "s.density") as store:
+        store.put_embeddings(int_ids(), x, tier="warm")
+        assert store.verify() == []
+    codes = tmp_path / "s.density" / "tiers" / "warm" / "vectors" / "codes.npy"
+    blob = bytearray(codes.read_bytes())
+    blob[200] ^= 0xFF  # flip one code byte well past the npy header
+    codes.write_bytes(bytes(blob))
+    with open_store(tmp_path / "s.density") as store:
+        assert store.verify() == ["tiers/warm/vectors/codes.npy"]
+
+
+def test_corrupt_trace_blocks_surface_store_error(tmp_path):
+    """Regression: zstd corruption leaked ZstdError out of replay_raw."""
+    fixture = write_fixture(tmp_path)
+    with open_store(tmp_path / "s.density") as store:
+        store.put_traces(fixture, tier="warm")
+    blocks = tmp_path / "s.density" / "tiers" / "warm" / "traces" / "content.blocks.bin"
+    blob = bytearray(blocks.read_bytes())
+    blob[0] ^= 0xFF  # break the zstd frame magic: decode must fail
+    blocks.write_bytes(bytes(blob))
+    with open_store(tmp_path / "s.density") as store:
+        with pytest.raises(StoreError, match="verify"):
+            store.replay_raw("t1")
+
+
+def test_replay_split_corpora_raises(tmp_path):
+    """Regression: a trace split across tiers was silently truncated.
+
+    put_traces(warm, A) then put_traces(cold, B) is legal; when a
+    trace_id exists in both with different lines, replay must refuse
+    instead of returning only the warm half.
+    """
+    a = tmp_path / "corpusA"
+    b = tmp_path / "corpusB"
+    a.mkdir()
+    b.mkdir()
+    la = [_jline({"trace_id": "t1", "ts": i, "role": "user", "type": "message",
+                  "content": f"A{i}"}) for i in range(3)]
+    lb = [_jline({"trace_id": "t1", "ts": 100 + i, "role": "user", "type": "message",
+                  "content": f"B{i}"}) for i in range(3)]
+    only_b = _jline({"trace_id": "t2", "ts": 200, "role": "user", "type": "message",
+                     "content": "only in B"})
+    (a / "a.jsonl").write_bytes(b"\n".join(la) + b"\n")
+    (b / "b.jsonl").write_bytes(b"\n".join(lb) + b"\n" + only_b + b"\n")
+    with open_store(tmp_path / "s.density") as store:
+        store.put_traces(a, tier="warm")
+        store.put_traces(b, tier="cold")
+        with pytest.raises(StoreError, match="different"):
+            store.replay_raw("t1")
+        # A trace held by a single tier stays replayable.
+        assert store.replay_raw("t2") == [only_b]
+
+
+def test_search_k_below_one_raises(tmp_path):
+    """Regression: k=0 returned empty on warm and crashed cold PQ."""
+    x, q = make_vectors()
+    with open_store(tmp_path / "s.density") as store:
+        store.put_embeddings(int_ids(), x, tier="warm")
+        store.put_embeddings(int_ids(), x, tier="cold")
+        for tier in (None, "warm", "cold"):
+            with pytest.raises(StoreError, match="k must be"):
+                store.search(q, k=0, tier=tier)
+            with pytest.raises(StoreError, match="k must be"):
+                store.search(q, k=-3, tier=tier)
+        with pytest.raises(StoreError, match="k must be"):
+            store.search_cli(json.dumps([float(v) for v in q]), k=0)
+
+
+def test_search_cli_pathological_json_falls_back_to_text(tmp_path):
+    """Regression: '[' * 100000 escaped as RecursionError from json.loads."""
+    x, _ = make_vectors()
+    with open_store(tmp_path / "s.density") as store:
+        store.put_embeddings(int_ids(), x, tier="warm")
+        with pytest.warns(UserWarning, match="demo-only"):
+            ids, scores = store.search_cli("[" * 100000, k=3)
+    assert ids.shape == (3,)
+    assert scores.shape == (3,)
+
+
+# -- matryoshka --------------------------------------------------------
+
+
+def test_matryoshka_warm_tier_records_flag_and_searches(tmp_path):
+    x, q = make_vectors()
+    with open_store(tmp_path / "s.density") as store:
+        store.put_embeddings(int_ids(), x, tier="warm", matryoshka_dims=16)
+        ids, scores = store.search(q, k=5)
+    # The query is truncated into the tier's 16-dim space at search time,
+    # where the planted near-duplicate is still by far the closest row.
+    assert ids.shape == (5,)
+    assert ids[0] == 1000 + PLANTED_ROW
+    assert np.all(np.diff(scores) <= 1e-5)
+    m = Manifest.load(tmp_path / "s.density")
+    assert m.tiers["warm"].matryoshka_dims == 16
+    meta = json.loads(
+        (tmp_path / "s.density" / "tiers" / "warm" / "vectors" / "state.json")
+        .read_text(encoding="utf-8")
+    )
+    assert meta["dim"] == 16
+    # The store dim stays the input dim: full-width queries remain valid.
+    assert m.datasets.embeddings.dim == DIM
+
+
+def test_matryoshka_rejects_bad_dims(tmp_path):
+    x, _ = make_vectors()
+    with open_store(tmp_path / "s.density") as store:
+        with pytest.raises(StoreError, match="matryoshka"):
+            store.put_embeddings(int_ids(), x, tier="warm", matryoshka_dims=0)
+        with pytest.raises(StoreError, match="matryoshka"):
+            store.put_embeddings(int_ids(), x, tier="warm", matryoshka_dims=DIM + 1)
+
+
+def test_matryoshka_rerank_requires_matching_dims(tmp_path):
+    """Cross-tier rerank only applies when both tiers share the truncation.
+
+    A full-width warm reranker cannot score a 16-dim cold query, so the
+    cold search must fall back to no-rerank with the honesty warning;
+    matching truncations rerank silently.
+    """
+    import warnings as _warnings
+
+    x, q = make_vectors()
+    with open_store(tmp_path / "a.density") as store:
+        store.put_embeddings(int_ids(), x, tier="warm")
+        store.put_embeddings(int_ids(), x, tier="cold", matryoshka_dims=16)
+        with pytest.warns(UserWarning, match="without rerank"):
+            ids, _ = store.search(q, k=5, tier="cold")
+        assert ids[0] == 1000 + PLANTED_ROW
+
+    with open_store(tmp_path / "b.density") as store:
+        store.put_embeddings(int_ids(), x, tier="warm", matryoshka_dims=16)
+        store.put_embeddings(int_ids(), x, tier="cold", matryoshka_dims=16)
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("error")  # any warning here is a failure
+            ids, scores = store.search(q, k=5, tier="cold")
+        assert ids[0] == 1000 + PLANTED_ROW
+        assert np.all(np.diff(scores) <= 1e-5)
