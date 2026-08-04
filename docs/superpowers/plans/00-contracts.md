@@ -240,6 +240,35 @@ Compiled and fallback results agree within 1e-5 relative.
   Text search: `density.embedders.HashingEmbedder(dim=768)` ships as a
   clearly labeled demo-only embedder (deterministic feature hashing).
 
+  v1 store semantics (Phase 3):
+  - One `put_traces` call and one `put_embeddings` call per tier. A
+    second call on the same tier raises StoreError telling the caller to
+    batch into a single call (`put_traces` accepts a directory).
+    Incremental re-encoding is deferred until the audit can re-verify
+    recall after appends.
+  - `put_traces(tier="hot")` raises StoreError: the hot tier's contract
+    is raw traces, and v1 does not build a raw passthrough bundle.
+  - `put_embeddings(..., codec="binary")` is a cold-only override that
+    selects COLD_BINARY_SPEC (0.90 floor, rerank depth 500). Vectors are
+    L2-normalized float32 at ingest; ids (int64 or strings) are stored
+    alongside the codes and search returns them, never row indices.
+  - Cold `search` reranks at the policy depth (pq 200, binary 500)
+    through the best aligned reranker: SQ8 over warm codes first, then
+    ExactReranker over hot fp32. Aligned means the other tier stored the
+    identical id sequence. With no aligned reranker the search runs
+    without rerank and emits a one-time UserWarning naming the
+    unapplied recall floor (the manifest schema has no notes field, so
+    the warning is the honesty channel).
+  - `Store.search_cli(query: str, k=10, tier=None)` backs the CLI: the
+    query is parsed as a JSON array vector first, otherwise embedded as
+    text via the configured embedder, or via the demo HashingEmbedder
+    with a one-time demo-only warning when none is configured.
+  - On disk, each tier's vector state persists as one little-endian
+    .npy file per `to_state` array plus a `state.json` listing (npz is
+    avoided: its zip container embeds timestamps and would break
+    deterministic checksums). Every referenced file gets a sha256 entry
+    in the manifest.
+
 ## recall/
 
 - metrics.py:
