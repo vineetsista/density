@@ -1,0 +1,140 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Report accel state
+        # The compiled kernels build lazily on first import. This step makes
+        # the outcome visible in the log instead of silent: the parity tests
+        # below cover correctness either way.
+        run: DENSITY_ACCEL_DEBUG=1 python -c "import density; print('ACCEL_ACTIVE =', density.ACCEL_ACTIVE)"
+      - name: Tests
+        run: pytest -q
+
+  lint:
+    name: lint and prose rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Ruff
+        run: ruff check .
+      - name: Prose rules
+        # docs/design/00-contracts.md bans em and en dashes in prose,
+        # docstrings, comments, and templates. Checked by a script rather
+        # than a grep step: grep -P '\x{2014}' depends on the runner locale
+        # being UTF-8, and a check that silently passes is worse than none.
+        run: python scripts/check_prose.py
+
+  honesty:
+    name: benchmark table matches measured results
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "."
+      - name: README table is not hand-typed
+        # Fails when the table between the BENCH markers drifts from the
+        # newest file in benchmarks/results/. Benchmark numbers in this repo
+        # are generated, never written by hand, and this is what enforces it.
+        run: python scripts/update_readme_bench.py --check
+
+  smoke:
+    name: quickstart from a clean install
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Build and inspect the wheel
+        # Non-editable on purpose: an editable install reads templates and
+        # kernel sources straight out of the source tree, so it cannot catch
+        # package data missing from the built wheel. A wheel without the C++
+        # sources would pass every test while silently dropping every user
+        # to the numpy fallback.
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip build twine
+          python -m build --wheel
+          twine check dist/*
+          python -m zipfile -l dist/*.whl | grep -E 'density/py\.typed'
+          python -m zipfile -l dist/*.whl | grep -E 'audit/templates/report\.html\.j2'
+          python -m zipfile -l dist/*.whl | grep -E '_accel/cpp/kernels\.cpp'
+          pip install dist/*.whl
+      - name: Run the README quickstart
+        # A hand-maintained copy of the README quickstart block at a smaller
+        # corpus size, plus a resolved trace id and captured output. Update
+        # both together: this is what proves the published commands still run
+        # against a wheel a stranger would install.
+        run: |
+          set -euxo pipefail
+          density synth --gb 0.02 --out ./raw
+          density audit ./raw --out report.html
+          density compress ./raw
+          density search ./raw.density "user asked about a refund" -k 10
+          TRACE_ID=$(python -c "import json; print(json.loads(open('raw/traces/part-0000.jsonl',encoding='utf-8').readline())['trace_id'])")
+          density replay ./raw.density "$TRACE_ID" > replay.jsonl
+          density bench --quick --out ./bench-smoke
+          head -3 replay.jsonl
+          test -s report.html
+          test -s report.md
+          test -s bench-smoke/bench_quick.json
+      - name: Upload the audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-report
+          path: |
+            report.html
+            report.md
+            bench-smoke/bench_quick.json

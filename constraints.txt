@@ -1,0 +1,29 @@
+# Exact versions the published numbers in benchmarks/results/ were measured
+# with. The project itself declares lower bounds only, so a fresh resolve will
+# usually pick newer packages; use this file when you want to reproduce a
+# measured figure rather than measure your own.
+#
+#     pip install -e ".[dev,accel]" -c constraints.txt
+#
+# Every result file under benchmarks/results/ also records its own `versions`
+# block, so a number can always be tied back to what produced it even if this
+# file has moved on.
+
+numpy==2.5.1
+pyarrow==25.0.0
+zstandard==0.25.0
+pydantic==2.13.4
+jinja2==3.1.6
+typer==0.27.0
+
+# service extra
+fastapi==0.140.13
+uvicorn==0.52.0
+
+# accel extra
+pybind11==3.0.4
+
+# dev extra
+pytest==9.1.1
+hypothesis==6.163.0
+httpx==0.28.1

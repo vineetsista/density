@@ -1,0 +1,31 @@
+name: A measured number looks wrong
+description: A benchmark, gate, or audit figure does not reproduce.
+labels: [measurement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Recall numbers are seed-deterministic and should reproduce exactly on
+        the same machine. Wall-clock timings are machine-dependent and are
+        expected to differ.
+  - type: input
+    id: number
+    attributes:
+      label: Which number
+      description: For example "sq8 recall@10 in the README table", or a gate name.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: What you ran and what you measured
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: accel
+    attributes:
+      label: ACCEL_ACTIVE
+      description: python -c "import density; print(density.ACCEL_ACTIVE)"
+    validations:
+      required: true

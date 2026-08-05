@@ -9,18 +9,32 @@ build/
 .pytest_cache/
 .hypothesis/
 .ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 
-# Compiled acceleration kernels (built lazily, cached per machine)
+# Compiled acceleration kernels. Built lazily on first import and cached
+# under the user cache directory, never inside the repo.
 *.so
-src/density/_accel/_build/
 
-# Generated data: synth corpora, stores, reports produced during development
+# Generated data: synth corpora, stores, reports produced during development.
+# Anchored to the repo root so a file of the same name inside the package
+# (a template, a fixture) is never silently excluded from the wheel.
 /raw/
 /raw.density/
-*.density/
-report.html
-report.md
+/report.html
+/report.md
 /scratch/
+/bench-smoke/
+# Deliberately unanchored: a user store built anywhere in a working tree.
+# Directory-only, so no shipping file can be caught by it.
+*.density/
 
-# OS noise
+# Secrets
+.env
+.env.*
+
+# Editors and OS noise
+.idea/
+.vscode/
 .DS_Store

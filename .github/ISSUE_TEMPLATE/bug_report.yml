@@ -1,0 +1,35 @@
+name: Bug report
+description: Something behaves differently than documented or measured.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Everything in this project is seeded, so a report with a seed is
+        usually a report that reproduces. Please include one.
+  - type: textarea
+    id: command
+    attributes:
+      label: The exact command or API call
+      description: Including the seed, the tier, and the corpus shape.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened instead
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Paste the output of:
+        ```
+        python -c "import density, numpy, pyarrow, zstandard, sys; print(density.__version__, density.ACCEL_ACTIVE, numpy.__version__, pyarrow.__version__, zstandard.__version__, sys.version)"
+        ```
+      render: shell
+    validations:
+      required: true
