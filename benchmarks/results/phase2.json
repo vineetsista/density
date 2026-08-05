@@ -53,7 +53,7 @@
         "exact_dup_groups": 72946,
         "minhash_truncated": 0,
         "near_dup_clusters": 14140,
-        "seconds": 555.61,
+        "seconds": 354.78,
         "skipped_over_cap": 0,
         "unique_texts": 349129
       },
@@ -70,12 +70,27 @@
         "lines": 684451,
         "mismatches": 0
       },
-      "synth": null,
+      "synth": {
+        "bytes_embeddings": 308000256,
+        "bytes_total": 999999872,
+        "bytes_traces": 691999616,
+        "dim": 768,
+        "elapsed_s": 57.52801673900103,
+        "events": 671116,
+        "files": 14,
+        "malformed": 13335,
+        "n_lanes": 9479,
+        "n_traces": 26237,
+        "n_vectors": 100000,
+        "seed": 1337,
+        "target_bytes": 1000000000
+      },
       "timings_s": {
-        "dedup": 555.61,
-        "naive_zstd19": 337.6,
-        "roundtrip_verify": 41.87,
-        "shred": 128.13
+        "dedup": 354.78,
+        "generate": 57.65,
+        "naive_zstd19": 294.82,
+        "roundtrip_verify": 27.69,
+        "shred": 96.4
       }
     },
     "sanity_0.2gb": {
@@ -130,7 +145,7 @@
         "exact_dup_groups": 13926,
         "minhash_truncated": 0,
         "near_dup_clusters": 3662,
-        "seconds": 105.17,
+        "seconds": 54.42,
         "skipped_over_cap": 0,
         "unique_texts": 77146
       },
@@ -152,7 +167,7 @@
         "bytes_total": 199999839,
         "bytes_traces": 138399583,
         "dim": 768,
-        "elapsed_s": 29.690523055003723,
+        "elapsed_s": 7.16281227699983,
         "events": 133415,
         "files": 3,
         "malformed": 2718,
@@ -163,18 +178,18 @@
         "target_bytes": 200000000
       },
       "timings_s": {
-        "dedup": 105.17,
-        "generate": 29.72,
-        "naive_zstd19": 91.05,
-        "roundtrip_verify": 10.68,
-        "shred": 73.0
+        "dedup": 54.42,
+        "generate": 7.17,
+        "naive_zstd19": 58.5,
+        "roundtrip_verify": 5.4,
+        "shred": 26.47
       }
     }
   },
   "determinism_1gb": {
     "bit_identical": true,
     "files_compared": 7,
-    "second_shred_seconds": 221.33
+    "second_shred_seconds": 96.56
   },
   "dim": 768,
   "gates": [
@@ -215,5 +230,12 @@
     "python": "3.12.3"
   },
   "phase": 2,
-  "seed": 1337
+  "seed": 1337,
+  "versions": {
+    "density": "0.1.0",
+    "numpy": "2.5.1",
+    "pyarrow": "25.0.0",
+    "pydantic": "2.13.4",
+    "zstandard": "0.25.0"
+  }
 }
