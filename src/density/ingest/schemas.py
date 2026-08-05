@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _MICRO = timedelta(microseconds=1)
 
 # Alias tables in priority order, stored lowercase because input keys are
@@ -97,7 +98,7 @@ def _parse_ts(value: Any) -> int | None:
     except ValueError:
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     # Exact integer arithmetic on timedeltas, no float rounding.
     return (dt - _EPOCH) // _MICRO
 
@@ -195,7 +196,7 @@ class TraceEvent(BaseModel):
     extra: dict = Field(default_factory=dict)
 
     @classmethod
-    def from_raw(cls, obj: dict) -> "TraceEvent":
+    def from_raw(cls, obj: dict) -> TraceEvent:
         """Canonicalize a parsed JSON object into a TraceEvent.
 
         Unrecognized keys land in ``extra`` unchanged. Missing trace_id,

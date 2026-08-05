@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Iterable, Sequence
 
 import numpy as np
 
@@ -525,8 +525,13 @@ def find_clusters(
     normalized encoding exceeds the per-text shingle cap are compared
     by prefix and counted in stats.minhash_truncated.
 
-    Memory holds one copy of each distinct body plus per-unique
-    bookkeeping, never the full input stream.
+    Memory holds one copy of each distinct body plus one index per
+    input line. That is bounded by unique text rather than by corpus
+    size, which is a real bound on redundant corpora and no bound at all
+    on corpora of mostly unique bodies. The minhash stage has its own
+    caps (MINHASH_CAP_DEFAULT, MINHASH_MIN_CHARS) and reports what it
+    skipped; this retention does not, so size it before pointing the
+    audit at a corpus far past memory.
     """
     interned: dict[bytes, int] = {}
     bodies: list[str] = []

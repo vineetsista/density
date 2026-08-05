@@ -200,3 +200,43 @@ def test_to_state_round_trip_preserves_results(unit_vectors):
     ids1, scores1 = restored.search(q, k=10)
     np.testing.assert_array_equal(ids0, ids1)
     np.testing.assert_array_equal(scores0, scores1)
+
+
+# --- regression: partial selection must equal the full stable sort --------
+
+
+def test_stable_smallest_matches_stable_argsort_on_tie_heavy_input() -> None:
+    """Ties are the whole difficulty of replacing argsort with a partition.
+
+    argpartition keeps an arbitrary subset of equal values at the cut, so
+    the tied band has to be rebuilt by hand. Hamming distances are small
+    integers, so ties are the common case, not an edge case.
+    """
+    from density.engine.embed.binary import _stable_smallest
+
+    rng = np.random.default_rng(4242)
+    for _ in range(200):
+        n = int(rng.integers(1, 60))
+        span = int(rng.integers(1, 7))
+        dist = rng.integers(0, span, size=n).astype(np.int32)
+        for want in range(1, n + 2):
+            got = _stable_smallest(dist, want)
+            expected = np.argsort(dist, kind="stable")[: min(want, n)]
+            assert np.array_equal(got, expected), (n, want, dist)
+
+
+def test_search_matches_the_full_sort_reference() -> None:
+    from density.engine import _accel
+
+    rng = np.random.default_rng(9)
+    X = rng.normal(size=(300, 64)).astype(np.float32)
+    X /= np.linalg.norm(X, axis=1, keepdims=True)
+    codec = BinaryCodec().fit(X)
+    codec.add(X)
+    for k in (1, 5, 10, 300):
+        ids, scores = codec.search(X[:5], k=k)
+        for row in range(5):
+            dist = _accel.hamming_scan(codec._codes, np.packbits(X[row] > 0))
+            order = np.argsort(dist, kind="stable")[:k]
+            assert np.array_equal(ids[row], order)
+            assert np.allclose(scores[row], -dist[order].astype(np.float32))

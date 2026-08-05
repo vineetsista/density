@@ -23,6 +23,11 @@ _SUPPORTED_SUFFIXES = (".npy", ".parquet", ".jsonl")
 # Column name candidates, checked lowercase, in preference order.
 _VECTOR_COLUMNS = ("vector", "embedding", "embeddings", "vec")
 _ID_COLUMNS = ("id", "ids")
+# Byte budget per float32 buffer while streaming a .jsonl set. The row
+# count is derived from the sniffed dim, so a very wide vector shrinks the
+# buffer instead of allocating a fixed 65536 rows of it.
+_JSONL_CHUNK_BYTES = 64 << 20
+_JSONL_MAX_CHUNK_ROWS = 65_536
 
 
 @dataclass
@@ -33,25 +38,49 @@ class EmbeddingSet:
     X: float32 [n, d], L2-normalized rows (zero rows stay exact zeros).
     source: the path the set was read from.
     normalized: True once rows are unit length.
+    nonfinite_rows: rows that carried a NaN or Inf before normalization and
+        are therefore stored as zero rows. Zero rows match no query, so
+        recall for them is unmeasurable; the audit reports the count as an
+        honesty flag rather than letting them quietly depress the number.
     """
 
     ids: np.ndarray
     X: np.ndarray
     source: str
     normalized: bool
+    nonfinite_rows: int = 0
 
 
-def l2_normalize(X: np.ndarray) -> np.ndarray:
+def l2_normalize(X: np.ndarray, return_zeroed: bool = False):
     """Return X as float32 with unit L2 rows; zero rows stay exact zeros.
 
     X: [n, d] any float or int dtype. Output: new float32 [n, d] array.
     Idempotent up to float32 rounding.
+
+    Rows whose norm is not finite (a NaN component, or a magnitude that
+    overflows the float32 square sum) are written as exact zero rows.
+    return_zeroed also returns the boolean [n] mask of those rows, so a
+    caller can report exactly the rows it destroyed rather than a
+    differently derived guess.
     """
     X = np.asarray(X, dtype=np.float32)
-    norms = np.linalg.norm(X, axis=1, keepdims=True)
-    # where= skips zero-norm rows entirely, so they come out as the zeros
-    # from `out` instead of 0/0 NaN.
-    return np.divide(X, norms, out=np.zeros_like(X), where=norms > 0)
+    # A NaN component makes the norm NaN; a huge-but-finite row can overflow
+    # the float32 square sum to inf even with every component finite. Both
+    # are unusable, and errstate keeps the overflow a value rather than a
+    # warning, because this is the documented graceful path.
+    with np.errstate(over="ignore", invalid="ignore"):
+        norms = np.linalg.norm(X, axis=1, keepdims=True)
+    # NaN fails the where= test and falls through as the zeros from `out`;
+    # inf would divide to NaN, so those rows are zeroed explicitly. Either
+    # way a poisoned row becomes an exact zero row and never leaks NaN into
+    # a codec fit.
+    bad = ~np.isfinite(norms)
+    norms = np.where(bad, np.float32(0.0), norms)
+    out = np.divide(X, norms, out=np.zeros_like(X), where=norms > 0)
+    zeroed = bad[:, 0]
+    if zeroed.any():
+        out[zeroed] = 0.0
+    return (out, zeroed) if return_zeroed else out
 
 
 def _ids_array(values: list[Any]) -> np.ndarray:
@@ -192,8 +221,17 @@ def _read_parquet(path: Path) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _read_jsonl(path: Path) -> tuple[np.ndarray, np.ndarray]:
-    """Read a JSONL embeddings file of {"id": ..., "vector"|"embedding": [...]}."""
-    rows: list[list[float]] = []
+    """Read a JSONL embeddings file of {"id": ..., "vector"|"embedding": [...]}.
+
+    Vectors land straight in float32 chunks rather than a list of Python
+    lists: a python float costs 24 bytes plus an 8 byte list slot, so
+    accumulating rows first would need roughly 8x the final array (about
+    25 GB for a 1M x 768 set) before a single byte was converted.
+    """
+    chunks: list[np.ndarray] = []
+    buffer: np.ndarray | None = None
+    filled = 0
+    n_rows = 0
     ids: list[Any] = []
     dim: int | None = None
     try:
@@ -209,6 +247,13 @@ def _read_jsonl(path: Path) -> tuple[np.ndarray, np.ndarray]:
                 obj = json.loads(text)
             except json.JSONDecodeError as exc:
                 raise IngestError(f"{path}:{line_index}: invalid json: {exc}") from exc
+            except RecursionError as exc:
+                # Deep nesting overflows the scanner's stack and is not a
+                # JSONDecodeError; it must still surface as a DensityError
+                # so callers and the HTTP service report it as bad input.
+                raise IngestError(
+                    f"{path}:{line_index}: invalid json: nesting too deep"
+                ) from exc
             if not isinstance(obj, dict):
                 raise IngestError(f"{path}:{line_index}: expected a json object")
             vec = obj.get("vector", obj.get("embedding"))
@@ -220,20 +265,38 @@ def _read_jsonl(path: Path) -> tuple[np.ndarray, np.ndarray]:
                 raise IngestError(
                     f"{path}:{line_index}: vector dim {len(vec)} disagrees with {dim}"
                 )
-            rows.append(vec)
+            if buffer is None or filled == buffer.shape[0]:
+                if buffer is not None:
+                    chunks.append(buffer)
+                rows = max(
+                    1,
+                    min(_JSONL_MAX_CHUNK_ROWS, _JSONL_CHUNK_BYTES // max(1, dim * 4)),
+                )
+                buffer = np.empty((rows, dim), dtype=np.float32)
+                filled = 0
+            try:
+                buffer[filled] = np.fromiter(vec, dtype=np.float32, count=dim)
+            except (TypeError, ValueError) as exc:
+                raise IngestError(
+                    f"{path}: non-numeric vector values: {exc}"
+                ) from exc
+            filled += 1
+            n_rows += 1
             if "id" in obj:
                 ids.append(obj["id"])
-    if not rows:
+    if n_rows == 0:
         raise IngestError(f"{path}: no vectors found")
-    try:
-        X = np.asarray(rows, dtype=np.float32)
-    except (TypeError, ValueError) as exc:
-        raise IngestError(f"{path}: non-numeric vector values: {exc}") from exc
-    if len(ids) == len(rows):
+    assert buffer is not None
+    chunks.append(buffer[:filled])
+    # concatenate even for a single chunk: the last chunk is a slice of a
+    # full buffer, and returning the slice would keep the whole allocation
+    # alive through .base for the lifetime of the EmbeddingSet.
+    X = np.concatenate(chunks, axis=0)
+    if len(ids) == n_rows:
         return _ids_array(ids), X
     if not ids:
-        return np.arange(len(rows), dtype=np.int64), X
-    raise IngestError(f"{path}: only {len(ids)} of {len(rows)} lines carry an id")
+        return np.arange(n_rows, dtype=np.int64), X
+    raise IngestError(f"{path}: only {len(ids)} of {n_rows} lines carry an id")
 
 
 def _read_file(path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -311,4 +374,13 @@ def read_embeddings(path: str | Path, expected_dim: int | None = None) -> Embedd
         raise IngestError(
             f"{root}: vector dim {X.shape[1]} does not match expected_dim {expected_dim}"
         )
-    return EmbeddingSet(ids=ids, X=l2_normalize(X), source=str(root), normalized=True)
+    # The count comes from the mask that did the zeroing, so it can never
+    # disagree with what actually happened to the matrix.
+    Xn, zeroed = l2_normalize(X, return_zeroed=True)
+    return EmbeddingSet(
+        ids=ids,
+        X=Xn,
+        source=str(root),
+        normalized=True,
+        nonfinite_rows=int(zeroed.sum()),
+    )

@@ -30,7 +30,7 @@ class SQ8Reranker:
     the kernel's fused approximation, so scores match decode() @ q.
     """
 
-    def __init__(self, codec: "SQ8") -> None:
+    def __init__(self, codec: SQ8) -> None:
         self._codec = codec
 
     def score(self, q: np.ndarray, ids: np.ndarray) -> np.ndarray:

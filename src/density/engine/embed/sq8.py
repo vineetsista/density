@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from density.engine._accel import sq8_scores
+from density.engine import _accel
 from density.engine.embed import Reranker, topk
 from density.engine.embed.rerank import rerank_topk
 
@@ -29,7 +29,7 @@ class SQ8:
         self._blocks: list[np.ndarray] = []
         self._cache: np.ndarray | None = None
 
-    def fit(self, X: np.ndarray, seed: int = 1337) -> "SQ8":
+    def fit(self, X: np.ndarray, seed: int = 1337) -> SQ8:
         """X: float32 [n, d]. Returns self, fitted.
 
         Deterministic: the min/max sweep has no stochastic step, seed is
@@ -41,11 +41,22 @@ class SQ8:
             raise ValueError("fit expects a non-empty float32 [n, d] matrix")
         mins = X.min(axis=0)
         maxs = X.max(axis=0)
-        scale = (maxs - mins) / np.float32(255.0)
+        # A single NaN propagates into mins and maxs, and NaN > NaN is False,
+        # so the dimension would masquerade as flat while mins stayed NaN and
+        # poisoned every later score. Refuse the fit instead of quantizing
+        # garbage silently.
+        if not (np.isfinite(mins).all() and np.isfinite(maxs).all()):
+            raise ValueError("fit requires finite values: X contains NaN or inf")
+        # The range is taken in float64 so a dimension spanning nearly the
+        # whole float32 line cannot overflow to inf, survive the flat-dim
+        # guard, and decode to NaN much later. The widest possible span then
+        # divides to about 2.7e36, comfortably back inside float32.
+        span = maxs.astype(np.float64) - mins.astype(np.float64)
+        scale = span / 255.0
         # Flat dimensions carry no information: scale 0 makes encode map
         # them to code 0 and decode reproduce the constant exactly.
         self._mins = mins.astype(np.float32)
-        self._scale = np.where(maxs > mins, scale, np.float32(0.0)).astype(np.float32)
+        self._scale = np.where(maxs > mins, scale, 0.0).astype(np.float32)
         self._blocks = []
         self._cache = None
         return self
@@ -59,7 +70,18 @@ class SQ8:
         not eroded by intermediate float32 rounding.
         """
         mins, scale = self._require_fit()
-        X64 = np.asarray(X, dtype=np.float32).astype(np.float64)
+        X32 = np.asarray(X, dtype=np.float32)
+        # Without this check numpy broadcasting turns a [n, 1] or 1-D input
+        # into a full-width code block, fabricating dimensions that were
+        # never measured. PQ and binary validate; SQ8 must too.
+        if X32.ndim != 2 or X32.shape[1] != mins.shape[0]:
+            raise ValueError(
+                f"encode expects a float32 [n, {mins.shape[0]}] matrix, "
+                f"got shape {X32.shape}"
+            )
+        if not np.isfinite(X32).all():
+            raise ValueError("encode requires finite values: X contains NaN or inf")
+        X64 = X32.astype(np.float64)
         scale64 = scale.astype(np.float64)
         # Masked divide keeps flat dims (scale 0) at inv 0 without warning.
         inv = np.divide(1.0, scale64, out=np.zeros_like(scale64), where=scale64 > 0)
@@ -93,41 +115,64 @@ class SQ8:
         if rerank_depth > 0 and reranker is None:
             raise ValueError("rerank_depth > 0 requires a reranker")
         codes = self.stored_codes()
-        if codes.shape[0] == 0:
+        n = int(codes.shape[0])
+        if n == 0:
             raise ValueError("search requires vectors: call add() first")
         Q = np.asarray(q, dtype=np.float32)
         Q = Q[None, :] if Q.ndim == 1 else Q
-        ids_rows: list[np.ndarray] = []
-        score_rows: list[np.ndarray] = []
-        for row in Q:
+        if Q.ndim != 2 or Q.shape[1] != mins.shape[0]:
+            raise ValueError(
+                f"expected query dim {mins.shape[0]}, got shape {np.shape(q)}"
+            )
+        nq = int(Q.shape[0])
+        k_eff = max(0, min(int(k), n))
+        # Widen the candidate pool to at least k_eff: the output has k_eff
+        # columns, so a shallower depth would return fewer rows than the
+        # slots it must fill. PQ and binary already widen; without this,
+        # k > rerank_depth silently produced a short result matrix and any
+        # recall measured from it would be an artifact of the shape.
+        depth = min(max(int(rerank_depth), k_eff), n)
+        # Preallocating (rather than stacking a list) also makes an empty
+        # query batch return correctly shaped (0, k) arrays instead of
+        # raising out of np.stack.
+        ids = np.empty((nq, k_eff), dtype=np.int64)
+        scores = np.empty((nq, k_eff), dtype=np.float32)
+        for i in range(nq):
+            row = Q[i]
             # const in float64: it is a single accumulation over d terms and
             # costs nothing, while keeping the additive constant exact.
             const = float(row.astype(np.float64) @ mins.astype(np.float64))
-            approx = sq8_scores(codes, row * scale, const)
+            approx = _accel.sq8_scores(codes, row * scale, const)
             if rerank_depth > 0:
-                cand = topk(approx, rerank_depth)
+                cand = topk(approx, depth)
                 assert reranker is not None
-                ids, scores = rerank_topk(row, cand, reranker, k)
+                r_ids, r_scores = rerank_topk(row, cand, reranker, k_eff)
+                ids[i] = r_ids
+                scores[i] = r_scores
             else:
-                ids = topk(approx, k)
-                scores = approx[ids].astype(np.float32)
-            ids_rows.append(ids)
-            score_rows.append(scores)
-        return (
-            np.stack(ids_rows).astype(np.int64),
-            np.stack(score_rows).astype(np.float32),
-        )
+                top = topk(approx, k_eff)
+                ids[i] = top
+                scores[i] = approx[top].astype(np.float32)
+        return ids, scores
 
     def stored_codes(self) -> np.ndarray:
-        """All retained codes as one uint8 [n, d] matrix (cached view)."""
+        """All retained codes as one read-only uint8 [n, d] matrix.
+
+        Read-only on purpose: with a single block the cache aliases that
+        block, so a writable handle would let a caller corrupt the index in
+        place, and the aliasing would silently stop after the next add().
+        Callers that need to mutate take their own copy.
+        """
         if self._cache is None:
             mins, _ = self._require_fit()
             if not self._blocks:
-                self._cache = np.empty((0, mins.shape[0]), dtype=np.uint8)
+                cache = np.empty((0, mins.shape[0]), dtype=np.uint8)
             elif len(self._blocks) == 1:
-                self._cache = np.ascontiguousarray(self._blocks[0])
+                cache = np.ascontiguousarray(self._blocks[0]).view()
             else:
-                self._cache = np.concatenate(self._blocks, axis=0)
+                cache = np.concatenate(self._blocks, axis=0)
+            cache.flags.writeable = False
+            self._cache = cache
         return self._cache
 
     def encoded_nbytes(self) -> int:
@@ -149,7 +194,7 @@ class SQ8:
         }
 
     @classmethod
-    def from_state(cls, state: dict[str, np.ndarray]) -> "SQ8":
+    def from_state(cls, state: dict[str, np.ndarray]) -> SQ8:
         """Inverse of to_state, including stored codes."""
         for key in ("mins", "scale", "codes"):
             if key not in state:

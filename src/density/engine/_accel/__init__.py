@@ -12,7 +12,10 @@ from __future__ import annotations
 
 ACCEL_ACTIVE: bool = False
 
-from density.engine._accel import fallback as _fb
+# Declared above the import on purpose: the flag is this module's contract
+# and reads first, and the fallback import below is what defines the three
+# kernel names it describes.
+from density.engine._accel import fallback as _fb  # noqa: E402
 
 sq8_scores = _fb.sq8_scores
 pq_adc_scan = _fb.pq_adc_scan

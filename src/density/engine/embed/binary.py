@@ -15,6 +15,37 @@ import numpy as np
 from density.engine import _accel
 
 
+def _stable_smallest(dist: np.ndarray, want: int) -> np.ndarray:
+    """The `want` smallest distances, ordered by (distance, row index).
+
+    Byte-for-byte the same answer as np.argsort(dist, kind="stable")[:want],
+    at O(n) instead of O(n log n) and without allocating a full permutation.
+    That matters here: hamming search runs one selection per query over the
+    whole corpus, so a full sort would dominate the popcount scan it exists
+    to serve, and the published binary timings would measure numpy's sort.
+
+    Ties are the whole difficulty. argpartition picks an arbitrary subset of
+    equal values at the cut, so the tied band is rebuilt explicitly: every
+    row strictly below the cutoff, then the lowest-indexed tied rows needed
+    to fill `want`. Hamming ties are common at low bit widths, and stable
+    tie order is what keeps results bit-identical across runs.
+    """
+    n = int(dist.shape[0])
+    want = min(int(want), n)
+    if want <= 0:
+        # argpartition(dist, -1) is legal and would silently return the wrong
+        # thing here, so the empty case is handled before the partition.
+        return np.empty(0, dtype=np.int64)
+    if want >= n:
+        sel = np.arange(n)
+    else:
+        cutoff = dist[np.argpartition(dist, want - 1)[want - 1]]
+        below = np.flatnonzero(dist < cutoff)
+        tied = np.flatnonzero(dist == cutoff)
+        sel = np.concatenate((below, tied[: want - below.shape[0]]))
+    return sel[np.lexsort((sel, dist[sel]))].astype(np.int64)
+
+
 def _validated_2d(X: np.ndarray) -> np.ndarray:
     """Return X as a 2-D array with a bit-packable width.
 
@@ -46,7 +77,7 @@ class BinaryCodec:
         self._dim: int | None = None
         self._codes: np.ndarray | None = None
 
-    def fit(self, X: np.ndarray, seed: int = 1337) -> "BinaryCodec":
+    def fit(self, X: np.ndarray, seed: int = 1337) -> BinaryCodec:
         """Validate X: float [n, d], d divisible by 8, and record d.
 
         seed is accepted for protocol parity only: sign quantization has
@@ -120,7 +151,7 @@ class BinaryCodec:
 
         n = self._codes.shape[0]
         nq = q_arr.shape[0]
-        kk = min(int(k), n)
+        kk = max(0, min(int(k), n))
 
         rerank_topk = None
         if rerank_depth > 0:
@@ -136,19 +167,15 @@ class BinaryCodec:
         for i in range(nq):
             qb = np.packbits(q_arr[i] > 0)
             dist = _accel.hamming_scan(self._codes, qb)
-            # Stable sort so equal distances resolve by row index: hamming
-            # ties are common at low bit widths and must not break
-            # bit-identical determinism across runs.
-            order = np.argsort(dist, kind="stable")
+            want = depth if rerank_topk is not None else kk
+            order = _stable_smallest(dist, want)
             if rerank_topk is not None:
-                cand = order[:depth].astype(np.int64)
-                r_ids, r_scores = rerank_topk(q_arr[i], cand, reranker, kk)
+                r_ids, r_scores = rerank_topk(q_arr[i], order, reranker, kk)
                 ids[i] = r_ids[:kk]
                 scores[i] = np.asarray(r_scores[:kk], dtype=np.float32)
             else:
-                top = order[:kk]
-                ids[i] = top
-                scores[i] = -dist[top].astype(np.float32)
+                ids[i] = order[:kk]
+                scores[i] = -dist[order[:kk]].astype(np.float32)
         return ids, scores
 
     def encoded_nbytes(self) -> int:
@@ -170,7 +197,7 @@ class BinaryCodec:
         return {"codes": codes, "dim": np.asarray([dim], dtype=np.int64)}
 
     @classmethod
-    def from_state(cls, state: dict[str, np.ndarray]) -> "BinaryCodec":
+    def from_state(cls, state: dict[str, np.ndarray]) -> BinaryCodec:
         """Rebuild a codec from to_state output. Inverse of to_state."""
         codec = cls()
         dim = int(np.asarray(state["dim"]).reshape(-1)[0])

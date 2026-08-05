@@ -42,9 +42,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any
 
 import numpy as np
 import pyarrow as pa
@@ -482,15 +483,29 @@ class _PackedStore:
             enable_ldm=_PACK_ENABLE_LDM,
         )
         perm = np.zeros(n, dtype=np.int64)
-        for position, uid in enumerate(order):
-            uid_i = int(uid)
-            self._spill.seek(self._offsets[uid_i])
-            writer.append(self._spill.read(self._lengths[uid_i]))
-            perm[uid_i] = position
-        compressed = writer.finish()
-        self._spill.close()
-        self._spill_path.unlink(missing_ok=True)
+        # The spill is sized like the store's unique payload bytes, so a
+        # failure here (ENOSPC, a corrupt block, an interrupt) must not
+        # leave it behind: nothing in the manifest would ever point at it,
+        # and a failed ingest would leave the store larger than the corpus
+        # it could not ingest. The writer holds a thread pool that only
+        # finish() shuts down, so an unfinished writer is aborted too.
+        try:
+            for position, uid in enumerate(order):
+                uid_i = int(uid)
+                self._spill.seek(self._offsets[uid_i])
+                writer.append(self._spill.read(self._lengths[uid_i]))
+                perm[uid_i] = position
+            compressed = writer.finish()
+        finally:
+            writer.abort()
+            self.discard()
         return perm, compressed
+
+    def discard(self) -> None:
+        """Close the spill handle and remove the spill file. Idempotent."""
+        if not self._spill.closed:
+            self._spill.close()
+        self._spill_path.unlink(missing_ok=True)
 
 
 def shred_events(
@@ -543,6 +558,10 @@ def shred_events(
     )
     lines = events = malformed = residual_lines = raw_bytes = 0
     residual_seq = 0
+    # Bound before the try so the failure handler can close whichever of
+    # these the rewrite pass had already opened.
+    writer: pq.ParquetWriter | None = None
+    tmp_file: pq.ParquetFile | None = None
 
     def _flush_rows(force: bool = False) -> None:
         n = len(cols["file"])
@@ -581,63 +600,85 @@ def shred_events(
         cols["residual_ref"].append(residual_idx)
         _flush_rows()
 
-    for parsed in parsed_iter:
-        p = _build_pending(parsed)
-        lines += 1
-        raw_bytes += len(parsed.raw)
-        if parsed.event is None:
-            malformed += 1
-        else:
-            events += 1
-        if p.residual is not None:
-            residual_lines += 1
-        _emit(p)
+    # Every partial artifact below (the temp parquet, both packed-store
+    # spills, sized like the unique payload bytes) is invisible to the
+    # manifest, so a failed shred must not leave them on disk: nothing
+    # would ever point at them and the store would end up larger than
+    # the corpus it could not ingest.
+    try:
+        for parsed in parsed_iter:
+            p = _build_pending(parsed)
+            lines += 1
+            raw_bytes += len(parsed.raw)
+            if parsed.event is None:
+                malformed += 1
+            else:
+                events += 1
+            if p.residual is not None:
+                residual_lines += 1
+            _emit(p)
 
-    _flush_rows(force=True)
-    tmp_writer.close()
+        _flush_rows(force=True)
+        tmp_writer.close()
 
-    store_bytes = {"residual": residual_store.finish()}
-    perms: dict[str, pa.Array] = {}
-    for prefix in ("content", "extra"):
-        perm, compressed = packed[prefix].pack(workers=_COMPRESS_WORKERS)
-        store_bytes[prefix] = compressed
-        perms[prefix] = pa.array(perm, type=pa.int64())
+        store_bytes = {"residual": residual_store.finish()}
+        perms: dict[str, pa.Array] = {}
+        for prefix in ("content", "extra"):
+            perm, compressed = packed[prefix].pack(workers=_COMPRESS_WORKERS)
+            store_bytes[prefix] = compressed
+            perms[prefix] = pa.array(perm, type=pa.int64())
 
-    # Rewrite pass: map provisional uids to packed positions. pc.take
-    # keeps nulls null, so rows without a payload stay untouched. Row
-    # group boundaries depend only on the row count (the temp file was
-    # written in _ROW_GROUP_ROWS groups and is read back the same way),
-    # so the final file is bit-identical for a given input sequence.
-    writer = pq.ParquetWriter(
-        parquet_path,
-        _SCHEMA,
-        compression="zstd",
-        compression_level=int(level),
-        use_dictionary=list(_DICT_COLUMNS),
-        column_encoding=dict(_COLUMN_ENCODING),
-    )
-    tmp_file = pq.ParquetFile(tmp_parquet_path)
-    for batch in tmp_file.iter_batches(batch_size=_ROW_GROUP_ROWS):
-        table = pa.Table.from_batches([batch])
-        for prefix, column in (("content", "content_ref"), ("extra", "extra_ref")):
-            idx = table.schema.get_field_index(column)
-            remapped = pc.take(perms[prefix], table.column(column))
-            table = table.set_column(idx, column, remapped)
-        writer.write_table(table)
-    writer.close()
-    tmp_file.close()
-    tmp_parquet_path.unlink(missing_ok=True)
+        # Rewrite pass: map provisional uids to packed positions. pc.take
+        # keeps nulls null, so rows without a payload stay untouched. Row
+        # group boundaries depend only on the row count (the temp file was
+        # written in _ROW_GROUP_ROWS groups and is read back the same way),
+        # so the final file is bit-identical for a given input sequence.
+        writer = pq.ParquetWriter(
+            parquet_path,
+            _SCHEMA,
+            compression="zstd",
+            compression_level=int(level),
+            use_dictionary=list(_DICT_COLUMNS),
+            column_encoding=dict(_COLUMN_ENCODING),
+        )
+        tmp_file = pq.ParquetFile(tmp_parquet_path)
+        for batch in tmp_file.iter_batches(batch_size=_ROW_GROUP_ROWS):
+            table = pa.Table.from_batches([batch])
+            for prefix, column in (("content", "content_ref"), ("extra", "extra_ref")):
+                idx = table.schema.get_field_index(column)
+                remapped = pc.take(perms[prefix], table.column(column))
+                table = table.set_column(idx, column, remapped)
+            writer.write_table(table)
+        writer.close()
+        tmp_file.close()
+        tmp_parquet_path.unlink(missing_ok=True)
 
-    return ShredResult(
-        lines=lines,
-        events=events,
-        malformed=malformed,
-        residual_lines=residual_lines,
-        raw_bytes=raw_bytes,
-        structured_bytes=parquet_path.stat().st_size,
-        store_bytes=store_bytes,
-        out_dir=out,
-    )
+        return ShredResult(
+            lines=lines,
+            events=events,
+            malformed=malformed,
+            residual_lines=residual_lines,
+            raw_bytes=raw_bytes,
+            structured_bytes=parquet_path.stat().st_size,
+            store_bytes=store_bytes,
+            out_dir=out,
+        )
+    except BaseException:
+        tmp_writer.close()
+        # ParquetWriter creates its file immediately, so a failure inside
+        # the rewrite pass would otherwise leave a footerless
+        # structured.parquet that unshred's existence check would accept as
+        # a real bundle.
+        if writer is not None:
+            writer.close()
+            parquet_path.unlink(missing_ok=True)
+        if tmp_file is not None:
+            tmp_file.close()
+        residual_store.abort()
+        for store in packed.values():
+            store.discard()
+        tmp_parquet_path.unlink(missing_ok=True)
+        raise
 
 
 def unshred(dir_path: str | Path) -> Iterator[tuple[str, int, bytes]]:

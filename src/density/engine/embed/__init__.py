@@ -32,7 +32,7 @@ class VectorCodec(Protocol):
 
     name: str
 
-    def fit(self, X: np.ndarray, seed: int = 1337) -> "VectorCodec":
+    def fit(self, X: np.ndarray, seed: int = 1337) -> VectorCodec:
         """X: float32 [n, d] training vectors. Returns self, fitted."""
         ...
 
@@ -49,7 +49,7 @@ class VectorCodec(Protocol):
         q: np.ndarray,
         k: int = 10,
         rerank_depth: int = 0,
-        reranker: "Reranker | None" = None,
+        reranker: Reranker | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """q: float32 [d] or [nq, d]. Returns (ids int64 [nq, k], scores
         float32 [nq, k]) sorted best-first. Ids are row indices into the
@@ -75,7 +75,7 @@ class VectorCodec(Protocol):
         ...
 
     @classmethod
-    def from_state(cls, state: dict[str, np.ndarray]) -> "VectorCodec":
+    def from_state(cls, state: dict[str, np.ndarray]) -> VectorCodec:
         """Inverse of to_state."""
         ...
 

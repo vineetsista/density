@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
 
 from density.errors import IngestError
 from density.ingest.schemas import TraceEvent
@@ -68,31 +68,57 @@ class IngestStats:
             self.events += 1
         self.bytes_read += len(line.raw)
 
-    def merge(self, other: "IngestStats") -> None:
-        """Add another stats object into this one, counter by counter."""
-        self.files += other.files
+    def merge(self, other: IngestStats) -> None:
+        """Add another stats object into this one, counter by counter.
+
+        Files observed by both sides are counted once: two shards that
+        overlap on a file must not push files above the number of files on
+        disk. Counters set directly (no observed file names) still add
+        plainly, because there is nothing to deduplicate.
+        """
+        overlap = len(self._seen_files & other._seen_files)
+        self.files += other.files - overlap
         self.events += other.events
         self.malformed += other.malformed
         self.bytes_read += other.bytes_read
         self._seen_files |= other._seen_files
 
 
-def _trace_files(root: Path) -> list[tuple[str, Path]]:
+def _trace_files(
+    root: Path, exclude_prefix: str | None = None
+) -> list[tuple[str, Path]]:
     """List (relpath, path) trace files under root, sorted by relpath.
 
     Sorting makes iteration order deterministic across filesystems, which
-    determinism of every downstream artifact depends on.
+    determinism of every downstream artifact depends on. exclude_prefix
+    drops relpaths under one subdirectory (the embeddings directory of a
+    flat corpus) before any file is opened, so vectors stored as JSONL are
+    never parsed as trace events. It matches on a path boundary, with or
+    without a trailing slash, and is ignored when root is a single file.
     """
     if root.is_file():
         return [(root.name, root)]
-    return sorted(
+    files = sorted(
         (p.relative_to(root).as_posix(), p)
         for p in root.rglob("*")
         if p.is_file() and _TRACE_FILE_RE.search(p.name)
     )
+    if exclude_prefix:
+        # Match on a path boundary, not a bare string prefix: excluding
+        # "embeddings" must not also drop a real trace file named
+        # embeddings-2024-11.jsonl sitting at the root.
+        stem = exclude_prefix.rstrip("/")
+        files = [
+            (rel, p)
+            for rel, p in files
+            if rel != stem and not rel.startswith(stem + "/")
+        ]
+    return files
 
 
-def iter_raw_lines(path: str | Path) -> Iterator[tuple[str, int, bytes]]:
+def iter_raw_lines(
+    path: str | Path, exclude_prefix: str | None = None
+) -> Iterator[tuple[str, int, bytes]]:
     """Yield (file_relpath, line_index, raw_line_bytes) for every line.
 
     path may be a single file or a directory searched recursively for
@@ -107,7 +133,7 @@ def iter_raw_lines(path: str | Path) -> Iterator[tuple[str, int, bytes]]:
     root = Path(path)
     if not root.exists():
         raise IngestError(f"trace path does not exist: {root}")
-    for relpath, file_path in _trace_files(root):
+    for relpath, file_path in _trace_files(root, exclude_prefix):
         try:
             handle = file_path.open("rb")
         except OSError as exc:
@@ -129,6 +155,12 @@ def _parse_line(raw: bytes) -> tuple[TraceEvent | None, str | None]:
         obj = json.loads(text)
     except json.JSONDecodeError as exc:
         return None, f"invalid json: {exc}"
+    except RecursionError:
+        # Deeply nested arrays or objects blow the scanner's stack, and
+        # RecursionError is not a JSONDecodeError. One such line in a
+        # multi-gigabyte corpus must be quarantined like any other
+        # malformed line, not kill the run.
+        return None, "invalid json: nesting too deep"
     if not isinstance(obj, dict):
         return None, f"not a json object: {type(obj).__name__}"
     try:
@@ -142,6 +174,7 @@ def _parse_line(raw: bytes) -> tuple[TraceEvent | None, str | None]:
 def iter_events(
     path: str | Path,
     on_malformed: str = "quarantine",
+    exclude_prefix: str | None = None,
 ) -> Iterator[ParsedLine]:
     """Yield a ParsedLine for every physical line under path.
 
@@ -149,10 +182,12 @@ def iter_events(
     objects: "quarantine" (default) yields them with event=None and an
     error string, "skip" drops them, "raise" raises IngestError on the
     first one. Any other policy name raises IngestError.
+    exclude_prefix skips relpaths under one subdirectory (see
+    _trace_files); excluded files are never opened.
     """
     if on_malformed not in ("quarantine", "skip", "raise"):
         raise IngestError(f"unknown on_malformed policy: {on_malformed!r}")
-    for file_relpath, line_index, raw in iter_raw_lines(path):
+    for file_relpath, line_index, raw in iter_raw_lines(path, exclude_prefix):
         event, error = _parse_line(raw)
         if event is None:
             if on_malformed == "raise":

@@ -90,6 +90,11 @@ _ASSIGN_CHUNK = 16_384
 # prove scheduling never changes the fitted codebooks.
 _FIT_THREADS: int | None = None
 _MAX_DEFAULT_FIT_THREADS = 8
+# Per-worker ceiling on the anisotropic pair-column buffer. Every default
+# and contracted configuration lands far under it (m = d / 4 gives dsub 4
+# and about 5 MB at the sample cap), so the cap only bites for coarse m,
+# where it trades recomputation for not exhausting RAM.
+_ANISO_PAIR_BUDGET_BYTES = 64 << 20
 
 # Guards against zero-norm subvectors in the anisotropic weight w / x2:
 # for such rows the parallel direction is undefined and the cost falls
@@ -147,6 +152,15 @@ def _openblas_thread_control() -> tuple | None:
         return _BLAS_CTL
 
 
+# The BLAS pin is process-global state, so nested and concurrent fits share
+# one saved value behind this lock and a depth counter. Without them, two
+# fits in two threads would each save the other's pinned value of 1 and
+# BLAS would stay pinned to a single thread for the rest of the process.
+_BLAS_PIN_LOCK = threading.Lock()
+_BLAS_PIN_DEPTH = 0
+_BLAS_PIN_SAVED = 0
+
+
 @contextmanager
 def _blas_single_thread():
     """Pin BLAS to one thread for the duration, restoring on exit.
@@ -155,18 +169,28 @@ def _blas_single_thread():
     count, so fit results are bit-identical run to run whether or not
     the pin is available (without it they are just slower, computed
     under the process default which is likewise fixed).
+
+    Reentrant and thread safe: only the outermost active pin records the
+    original thread count, and only its exit restores it.
     """
+    global _BLAS_PIN_DEPTH, _BLAS_PIN_SAVED
     ctl = _openblas_thread_control()
     if ctl is None:
         yield
         return
     set_fn, get_fn = ctl
-    previous = int(get_fn())
-    set_fn(1)
+    with _BLAS_PIN_LOCK:
+        if _BLAS_PIN_DEPTH == 0:
+            _BLAS_PIN_SAVED = int(get_fn())
+            set_fn(1)
+        _BLAS_PIN_DEPTH += 1
     try:
         yield
     finally:
-        set_fn(previous if previous > 0 else 1)
+        with _BLAS_PIN_LOCK:
+            _BLAS_PIN_DEPTH -= 1
+            if _BLAS_PIN_DEPTH == 0:
+                set_fn(_BLAS_PIN_SAVED if _BLAS_PIN_SAVED > 0 else 1)
 
 
 def _topk_desc(scores: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
@@ -210,7 +234,7 @@ class PQ:
         self._codebooks: np.ndarray | None = None  # float32 [m, 256, d // m]
         self._codes: np.ndarray | None = None  # uint8 [n, m]
 
-    def fit(self, X: np.ndarray, seed: int = 1337) -> "PQ":
+    def fit(self, X: np.ndarray, seed: int = 1337) -> PQ:
         """Learn per-subspace codebooks with seeded k-means.
 
         X: float32 [n, d]. Trains on a seeded sample of at most 120000
@@ -363,7 +387,10 @@ class PQ:
         m, _, dsub = cb.shape
         n = codes.shape[0]
         nq = Q.shape[0]
-        k_eff = min(k, n)
+        # Clamped at 0 in all three codecs: a negative k used to reach
+        # np.empty((nq, -1)) and raise about negative dimensions instead of
+        # returning an empty result.
+        k_eff = max(0, min(int(k), n))
         # Widen the candidate pool to at least k_eff (and at most n): the
         # output has k_eff columns, so a depth below k_eff would leave the
         # rerank returning fewer rows than the slots it must fill, which
@@ -410,7 +437,7 @@ class PQ:
         return {"codebooks": cb.copy(), "codes": codes.copy()}
 
     @classmethod
-    def from_state(cls, state: dict[str, np.ndarray]) -> "PQ":
+    def from_state(cls, state: dict[str, np.ndarray]) -> PQ:
         """Rebuild a fitted codec from to_state output."""
         cb = np.ascontiguousarray(state["codebooks"], dtype=np.float32)
         if cb.ndim != 3 or cb.shape[1] != _N_CENTROIDS:
@@ -710,6 +737,24 @@ def _lloyd_refine(
     return centroids, iters_run
 
 
+def _fill_pair_cols(
+    sub: np.ndarray,
+    winv: np.ndarray,
+    pairs: list[tuple[int, int]],
+    start: int,
+    out: np.ndarray,
+) -> None:
+    """Write the scaled outer-product columns for pairs[start:start+width].
+
+    out: float32 [n_s, width]. Column p holds x_a * x_b * w / ||x||^2 for
+    pairs[start + p], the per-row term S_k accumulates over its members.
+    """
+    for p in range(out.shape[1]):
+        a, b = pairs[start + p]
+        np.multiply(sub[:, a], sub[:, b], out=out[:, p])
+        out[:, p] *= winv
+
+
 def _aniso_refine(
     sub: np.ndarray,
     x2: np.ndarray,
@@ -746,10 +791,19 @@ def _aniso_refine(
     # S_k needs sum over members of x_a * x_b / ||x||^2, so the per-row
     # products are iteration-invariant.
     pairs = [(a, b) for a in range(dsub) for b in range(a, dsub)]
-    pair_cols = np.empty((n_s, len(pairs)), dtype=np.float32)
-    for p, (a, b) in enumerate(pairs):
-        np.multiply(sub[:, a], sub[:, b], out=pair_cols[:, p])
-        pair_cols[:, p] *= winv
+    # Holding every pair column is iteration-invariant work, but the array
+    # is n_s x dsub(dsub+1)/2 float32: at the default m = d / 4 that is a
+    # few megabytes, while a legal but coarse m (m=8 on dim 768 gives
+    # dsub=96) would want 2.2 GB per subspace, times the concurrent fit
+    # workers. Past the budget the columns are rebuilt in pair-sized
+    # chunks each iteration. Chunking is over pairs, never over rows, so
+    # every bincount still reduces the same full column in the same order
+    # and both paths produce bit-identical codebooks.
+    chunk_pairs = max(1, _ANISO_PAIR_BUDGET_BYTES // max(1, n_s * 4))
+    precomputed = chunk_pairs >= len(pairs)
+    pair_cols = np.empty((n_s, min(chunk_pairs, len(pairs))), dtype=np.float32)
+    if precomputed:
+        _fill_pair_cols(sub, winv, pairs, 0, pair_cols)
     tbuf = np.empty((min(_ASSIGN_CHUNK, n_s), _N_CENTROIDS), dtype=np.float32)
     cbuf = np.empty_like(tbuf)
     assign = np.empty(n_s, dtype=np.int64)
@@ -765,11 +819,17 @@ def _aniso_refine(
         # Normal-equation systems: A_k = count_k I + w S_k is SPD for
         # occupied centroids, so the batched solve is well posed.
         a_mats = np.zeros((_N_CENTROIDS, dsub, dsub), dtype=np.float64)
-        for p, (a, b) in enumerate(pairs):
-            s = np.bincount(assign, weights=pair_cols[:, p], minlength=_N_CENTROIDS)
-            a_mats[:, a, b] += s
-            if a != b:
-                a_mats[:, b, a] += s
+        width = pair_cols.shape[1]
+        for start in range(0, len(pairs), width):
+            block = pairs[start : start + width]
+            cols = pair_cols[:, : len(block)]
+            if not precomputed:
+                _fill_pair_cols(sub, winv, pairs, start, cols)
+            for p, (a, b) in enumerate(block):
+                s = np.bincount(assign, weights=cols[:, p], minlength=_N_CENTROIDS)
+                a_mats[:, a, b] += s
+                if a != b:
+                    a_mats[:, b, a] += s
         diag = np.arange(dsub)
         a_mats[:, diag, diag] += counts[:, None]
         occupied = counts > 0

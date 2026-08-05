@@ -4,14 +4,19 @@ Why build here instead of at wheel build time: DECISIONS.md item 5. A plain
 `pip install -e .` must succeed on toolchain-less machines, so the extension
 is compiled lazily by the first import that wants it, cached per user, and
 every failure mode degrades silently to the numpy fallback (set
-DENSITY_ACCEL_DEBUG=1 to see why a build or load failed).
+DENSITY_ACCEL_DEBUG=1 to see why a build or load failed, or
+DENSITY_ACCEL_DISABLE=1 to skip the compiled path entirely).
 
 Cache layout: <user cache dir>/density/accel/<key>/_density_kernels<ext>,
 where <key> hashes both source files, the python version and ABI suffix,
-and the compiler version. A changed source or toolchain therefore lands in
-a fresh directory and stale builds are never picked up. Builds go to a
-temporary name first and are moved into place with os.replace, so two
-processes racing to build the same key both end up loading a complete .so.
+the compiler version, and the host CPU target. A changed source,
+toolchain, or microarchitecture therefore lands in a fresh directory and
+stale builds are never picked up: the target belongs in the key because
+the build tunes with -march=native, so a cache on shared or image-baked
+storage must never hand one host a binary built for another's instruction
+set. Builds go to a temporary name first and are moved into place with
+os.replace, so two processes racing to build the same key both end up
+loading a complete .so.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -83,15 +89,52 @@ def _ext_suffix() -> str:
     return sysconfig.get_config_var("EXT_SUFFIX") or ".so"
 
 
-def _cache_key(compiler_version: str) -> str:
+def _target_fingerprint(cxx: str) -> str:
+    """What `-march=native` will actually emit on this host.
+
+    The build tunes for the host CPU, so the cache key must separate hosts
+    that differ only in microarchitecture. Without this, a cache on shared
+    or image-baked storage lets a machine load a sibling's AVX-512 build
+    and die with SIGILL on the first scan: EXT_SUFFIX and the compiler
+    banner are identical across such hosts, so neither can tell them apart.
+    The kernel's own CPU flag list comes first because it is a file read
+    rather than a compiler launch, and two hosts with the same flags and
+    the same compiler resolve -march=native the same way. Asking the
+    compiler directly is the fallback where that file does not exist.
+    """
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8") as fh:
+            for line in fh:
+                if line.lower().startswith("flags"):
+                    return line
+    except OSError:
+        pass
+    try:
+        proc = subprocess.run(
+            [cxx, "-march=native", "-Q", "--help=target"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if proc.returncode == 0 and proc.stdout:
+            return proc.stdout
+    except Exception as exc:
+        _debug(f"target probe failed: {exc!r}")
+    return platform.machine()
+
+
+def _cache_key(compiler_version: str, target: str) -> str:
     # Any input that changes codegen or ABI participates in the key, so a
-    # source edit, interpreter upgrade, or toolchain swap forces a rebuild.
+    # source edit, interpreter upgrade, toolchain swap, or a different host
+    # microarchitecture forces a rebuild instead of reusing a foreign .so.
     h = hashlib.sha256()
     for src in _SOURCES:
         h.update(src.read_bytes())
     h.update(sys.version.encode())
     h.update(_ext_suffix().encode())
     h.update(compiler_version.encode())
+    h.update(platform.machine().encode())
+    h.update(target.encode())
     return h.hexdigest()[:16]
 
 
@@ -125,17 +168,28 @@ def _compile(cxx: str, target: Path) -> bool:
     base_cmd += [str(src) for src in _SOURCES]
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="build-", dir=target.parent))
-    tmp_so = tmp_dir / target.name
     try:
         # -march=native buys SIMD width and single-instruction popcount, but
         # some toolchains reject it (cross compilers, odd platforms): retry
         # portable if the tuned build fails.
-        for extra in (["-march=native"], []):
+        # Each attempt writes to its own path: a timed-out compile is killed
+        # but its `as` and `ld` grandchildren are not reaped, so a shared
+        # output file could still be written to while the next attempt's
+        # result was being promoted into the cache.
+        for attempt, extra in enumerate((["-march=native"], [])):
+            tmp_so = tmp_dir / f"{attempt}-{target.name}"
             cmd = base_cmd[:1] + extra + base_cmd[1:] + ["-o", str(tmp_so)]
             try:
                 proc = subprocess.run(
                     cmd, capture_output=True, text=True, timeout=_COMPILE_TIMEOUT_S
                 )
+            except subprocess.TimeoutExpired:
+                # The portable build is usually the faster compile (less
+                # vectorizer work), so a timed-out tuned build must fall
+                # through to it rather than abandoning acceleration for the
+                # lifetime of the process.
+                _debug(f"compile with {extra or 'portable flags'} timed out")
+                continue
             except Exception as exc:
                 _debug(f"compile invocation failed: {exc!r}")
                 return False
@@ -184,6 +238,12 @@ def load_compiled() -> ModuleType | None:
 
 
 def _load_uncached() -> ModuleType | None:
+    if os.environ.get("DENSITY_ACCEL_DISABLE") == "1":
+        # Escape hatch: a user hitting a bad cached build (or comparing
+        # the two paths) can force the numpy kernels without deleting
+        # cache directories.
+        _debug("DENSITY_ACCEL_DISABLE=1, using the numpy fallback")
+        return None
     try:
         import pybind11  # noqa: F401  (probe only; used via _include_dirs)
     except Exception:
@@ -200,7 +260,8 @@ def _load_uncached() -> ModuleType | None:
     version = _compiler_version(cxx)
     if version is None:
         return None
-    target = _cache_root() / _cache_key(version) / f"{_MODULE_NAME}{_ext_suffix()}"
+    key = _cache_key(version, _target_fingerprint(cxx))
+    target = _cache_root() / key / f"{_MODULE_NAME}{_ext_suffix()}"
     if not target.is_file() and not _compile(cxx, target):
         return None
     module = _import_so(target)

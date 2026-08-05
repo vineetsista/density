@@ -104,7 +104,7 @@ def test_jsonl_reader_embedding_key_string_ids(tmp_path, rng) -> None:
 def test_jsonl_missing_ids_default_to_arange(tmp_path, rng) -> None:
     f = tmp_path / "e.jsonl"
     with f.open("w", encoding="utf-8") as fh:
-        for i in range(4):
+        for _ in range(4):
             fh.write(json.dumps({"vector": rng.normal(size=3).tolist()}) + "\n")
     es = read_embeddings(f)
     assert np.array_equal(es.ids, np.arange(4, dtype=np.int64))
@@ -198,3 +198,58 @@ def test_reading_already_normalized_data_is_stable(tmp_path, rng) -> None:
     es = read_embeddings(f)
     assert np.allclose(es.X, x, atol=1e-6)
     assert es.normalized is True
+
+
+# --- regression: poisoned and pathological vector input -------------------
+
+
+def test_non_finite_rows_become_zero_rows_and_are_counted(tmp_path) -> None:
+    """A dead row is invisible to every query, so its loss must be reported.
+
+    Before the counter existed, a failed encoder batch silently depressed
+    every measured recall number with nothing anywhere saying why.
+    """
+    path = tmp_path / "vectors.jsonl"
+    rows = [{"id": i, "vector": [float(i), 1.0, 0.0, 0.0]} for i in range(5)]
+    rows[2]["vector"] = [float("nan"), 1.0, 0.0, 0.0]
+    rows[3]["vector"] = [float("inf"), 1.0, 0.0, 0.0]
+    path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+
+    es = read_embeddings(path)
+    assert es.nonfinite_rows == 2
+    assert np.isfinite(es.X).all()
+    assert not es.X[2].any() and not es.X[3].any()
+    assert es.X[0].any()
+
+
+def test_deeply_nested_vector_line_raises_ingest_error(tmp_path) -> None:
+    """RecursionError must surface as a DensityError, not a raw traceback."""
+    path = tmp_path / "vectors.jsonl"
+    path.write_bytes(b'{"id":1,"vector":' + b"[" * 40_000 + b"]" * 40_000 + b"}\n")
+    with pytest.raises(IngestError, match="nesting too deep"):
+        read_embeddings(path)
+
+
+def test_jsonl_reader_spans_multiple_chunks(tmp_path) -> None:
+    """The chunked reader must stitch buffers back into one matrix."""
+    from density.ingest import embeddings as mod
+
+    original = mod._JSONL_MAX_CHUNK_ROWS
+    mod._JSONL_MAX_CHUNK_ROWS = 4
+    try:
+        path = tmp_path / "vectors.jsonl"
+        path.write_text(
+            "\n".join(
+                json.dumps({"id": i, "vector": [float(i), 0.0]}) for i in range(11)
+            ),
+            encoding="utf-8",
+        )
+        es = read_embeddings(path)
+    finally:
+        mod._JSONL_MAX_CHUNK_ROWS = original
+    assert es.X.shape == (11, 2)
+    assert es.ids.tolist() == list(range(11))
+    # The result must own its memory, not alias the last chunk buffer.
+    assert es.X.base is None
+    # Row 0 is the zero vector, every other row normalizes to (1, 0).
+    assert es.X[1].tolist() == [1.0, 0.0]

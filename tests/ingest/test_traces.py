@@ -177,3 +177,55 @@ def test_byte_exact_reassembly_of_corpus(tiny_corpus) -> None:
     src = corpus / "traces" / "part-0000.jsonl"
     raws = [raw for _, _, raw in iter_raw_lines(src)]
     assert b"\n".join(raws) + b"\n" == src.read_bytes()
+
+
+# --- regression: malformed input must never crash a pipeline --------------
+
+
+def test_deeply_nested_line_is_quarantined_not_raised(tmp_path) -> None:
+    """json.loads raises RecursionError, which is not a JSONDecodeError.
+
+    One such line in a multi-gigabyte corpus used to kill the whole run
+    with a raw traceback, which is exactly what the malformed-line
+    contract forbids.
+    """
+    path = tmp_path / "deep.jsonl"
+    path.write_bytes(
+        b'{"trace_id":"a","content":' + b"[" * 40_000 + b"]" * 40_000 + b"}\n"
+        b'{"trace_id":"b","ts":1,"role":"user","type":"message","content":"ok"}\n'
+    )
+    parsed = list(iter_events(path))
+    assert len(parsed) == 2
+    assert parsed[0].event is None
+    assert "nesting too deep" in (parsed[0].error or "")
+    assert parsed[1].event is not None
+
+
+def test_merge_counts_a_shared_file_once(tmp_path) -> None:
+    """Two shards that both touched one file must not report it twice."""
+    path = tmp_path / "part-0000.jsonl"
+    path.write_bytes(
+        b'{"trace_id":"a","ts":1,"role":"user","type":"message","content":"x"}\n'
+    )
+    a, b = IngestStats(), IngestStats()
+    for line in iter_events(path):
+        a.observe(line)
+        b.observe(line)
+    a.merge(b)
+    assert a.files == 1
+    assert a.events == 2
+
+
+def test_exclude_prefix_never_opens_the_excluded_files(tmp_path) -> None:
+    """A flat corpus keeps its embeddings/*.jsonl out of the trace stream."""
+    (tmp_path / "embeddings").mkdir()
+    (tmp_path / "logs.jsonl").write_bytes(
+        b'{"trace_id":"a","ts":1,"role":"user","type":"message","content":"x"}\n'
+    )
+    (tmp_path / "embeddings" / "vectors.jsonl").write_bytes(
+        b'{"id":0,"vector":[1.0,0.0]}\n'
+    )
+    everything = [p.file for p in iter_events(tmp_path)]
+    assert sorted(everything) == ["embeddings/vectors.jsonl", "logs.jsonl"]
+    filtered = [p.file for p in iter_events(tmp_path, exclude_prefix="embeddings/")]
+    assert filtered == ["logs.jsonl"]

@@ -9,7 +9,8 @@ python (ints, floats, bools, None) and JSON-serializable as-is.
 from __future__ import annotations
 
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 

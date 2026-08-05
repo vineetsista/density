@@ -30,9 +30,9 @@ from __future__ import annotations
 import json
 import tempfile
 from collections import OrderedDict
+from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import Iterator
 
 import numpy as np
 import zstandard
@@ -223,6 +223,18 @@ class BlockWriter:
         self._buf = []
         self._buf_lens = []
         self._buf_size = 0
+
+    def abort(self) -> None:
+        """Release the compression pool without finishing the store.
+
+        finish() is the only other place the pool is shut down, so a failed
+        shred that never reaches it would leak _COMPRESS_WORKERS non-daemon
+        threads per attempt. Idempotent, and safe to call after finish().
+        """
+        if getattr(self, "_finished", False):
+            return
+        self._pool.shutdown(wait=False, cancel_futures=True)
+        self._finished = True
 
     def finish(self) -> int:
         """Flush, write blocks.bin, index.json, and the optional dict file.
@@ -433,24 +445,34 @@ class SpilledItems:
         self._lengths = reader._item_lengths_flat
         self._spill = tempfile.TemporaryFile(prefix=f"density-{prefix}-spill-")
         blocks_path = Path(dir_path) / f"{prefix}.blocks.bin"
-        with open(blocks_path, "rb") as fh:
-            for meta in reader._blocks:
-                fh.seek(meta["offset"])
-                dobj = reader._dctx.decompressobj()
-                remaining = meta["compressed_length"]
-                written = 0
-                while remaining > 0:
-                    chunk = fh.read(min(1 << 20, remaining))
-                    if not chunk:
-                        raise StoreError(f"truncated block store {blocks_path}")
-                    remaining -= len(chunk)
-                    out = dobj.decompress(chunk)
-                    written += len(out)
-                    self._spill.write(out)
-                if written != meta["uncompressed_length"]:
-                    raise StoreError(
-                        f"block in {blocks_path} decompressed to unexpected size"
-                    )
+        # A corrupt or truncated store raises out of the loop below. Without
+        # this guard the exception would escape __init__, so close() and
+        # __exit__ would never run and the spill handle (plus whatever it
+        # already wrote to disk) would survive until the garbage collector
+        # happened to reach it. A long-lived server replaying a damaged
+        # bundle would leak one per request.
+        try:
+            with open(blocks_path, "rb") as fh:
+                for meta in reader._blocks:
+                    fh.seek(meta["offset"])
+                    dobj = reader._dctx.decompressobj()
+                    remaining = meta["compressed_length"]
+                    written = 0
+                    while remaining > 0:
+                        chunk = fh.read(min(1 << 20, remaining))
+                        if not chunk:
+                            raise StoreError(f"truncated block store {blocks_path}")
+                        remaining -= len(chunk)
+                        out = dobj.decompress(chunk)
+                        written += len(out)
+                        self._spill.write(out)
+                    if written != meta["uncompressed_length"]:
+                        raise StoreError(
+                            f"block in {blocks_path} decompressed to unexpected size"
+                        )
+        except BaseException:
+            self._spill.close()
+            raise
 
     def get(self, index: int) -> bytes:
         """Exact bytes of the item at append position `index`."""
@@ -462,7 +484,7 @@ class SpilledItems:
     def close(self) -> None:
         self._spill.close()
 
-    def __enter__(self) -> "SpilledItems":
+    def __enter__(self) -> SpilledItems:
         return self
 
     def __exit__(self, *exc: object) -> None:

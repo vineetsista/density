@@ -167,3 +167,42 @@ def test_build_failure_falls_back_silently(monkeypatch) -> None:
         # already-imported consumer keeps seeing the real dispatch.
         sys.modules["density.engine._accel"] = saved
         density.engine._accel = saved
+
+
+# --- regression: both backends must reject the same invalid input ---------
+
+
+def test_fallback_rejects_the_same_shapes_the_compiled_kernels_reject() -> None:
+    """Silent numpy broadcasting would hide a bug on compiler-less machines.
+
+    Each case below is a shape the compiled bindings raise on. The numpy
+    path used to broadcast it into a plausible-looking answer instead, so
+    the two backends disagreed about what counts as valid input.
+    """
+    from density.engine._accel import fallback
+    from density.engine._accel.build import load_compiled
+
+    cases = [
+        ("sq8_scores", (np.zeros((3, 4), np.uint8), np.ones(2, np.float32), 0.0)),
+        ("pq_adc_scan", (np.zeros((3, 4), np.uint8), np.ones((4, 16), np.float32))),
+        ("hamming_scan", (np.zeros((3, 8), np.uint8), np.array([255], np.uint8))),
+    ]
+    compiled = load_compiled()
+    for name, args in cases:
+        with pytest.raises(ValueError) as fallback_err:
+            getattr(fallback, name)(*args)
+        if compiled is not None:
+            with pytest.raises(ValueError) as compiled_err:
+                getattr(compiled, name)(*args)
+            assert str(fallback_err.value) == str(compiled_err.value)
+
+
+def test_fallback_coerces_codes_to_uint8_like_the_bindings_do() -> None:
+    from density.engine._accel import fallback
+
+    codes = np.array([[1, 2], [3, 4]], dtype=np.int16)
+    lut = np.zeros((2, 256), dtype=np.float32)
+    lut[0, 1] = 1.0
+    lut[1, 2] = 2.0
+    out = fallback.pq_adc_scan(codes, lut)
+    assert out.tolist() == [3.0, 0.0]

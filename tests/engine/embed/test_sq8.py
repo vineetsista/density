@@ -170,3 +170,78 @@ def test_topk_helper() -> None:
     assert topk(scores, 3).tolist() == [1, 3, 4]
     assert topk(scores, 99).tolist() == [1, 3, 4, 0, 2]
     assert topk(scores, 0).tolist() == []
+
+
+# --- regression: shape, finiteness, and rerank-depth guards ---------------
+
+
+def _unit(n: int, d: int, seed: int = 11) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    X = rng.normal(size=(n, d)).astype(np.float32)
+    return (X / np.linalg.norm(X, axis=1, keepdims=True)).astype(np.float32)
+
+
+def test_search_widens_rerank_depth_to_k() -> None:
+    """A depth below k must not shrink the result matrix.
+
+    PQ and binary already widen. Without the same guard here, a caller
+    asking for k=10 at depth 3 got a 3-wide matrix and any recall measured
+    from it would be an artifact of the shape, not of the codec.
+    """
+    X = _unit(50, 8)
+    codec = SQ8().fit(X)
+    codec.add(X)
+    ids, scores = codec.search(X[:2], k=10, rerank_depth=3, reranker=ExactReranker(X))
+    assert ids.shape == (2, 10)
+    assert scores.shape == (2, 10)
+
+
+def test_search_on_empty_query_batch_returns_empty_matrices() -> None:
+    X = _unit(20, 8)
+    codec = SQ8().fit(X)
+    codec.add(X)
+    ids, scores = codec.search(np.zeros((0, 8), dtype=np.float32), k=5)
+    assert ids.shape == (0, 5)
+    assert scores.shape == (0, 5)
+
+
+def test_encode_rejects_a_mis_shaped_matrix() -> None:
+    """Broadcasting would otherwise fabricate dimensions that never existed."""
+    X = _unit(20, 8)
+    codec = SQ8().fit(X)
+    with pytest.raises(ValueError, match=r"\[n, 8\]"):
+        codec.add(np.ones((2, 1), dtype=np.float32))
+    with pytest.raises(ValueError, match=r"\[n, 8\]"):
+        codec.add(X[0])
+
+
+def test_fit_and_encode_reject_non_finite_values() -> None:
+    """NaN masquerades as a flat dimension and poisons every later score."""
+    X = _unit(20, 8)
+    bad = X.copy()
+    bad[3, 2] = np.nan
+    with pytest.raises(ValueError, match="finite"):
+        SQ8().fit(bad)
+    codec = SQ8().fit(X)
+    with pytest.raises(ValueError, match="finite"):
+        codec.encode(bad)
+
+
+def test_search_rejects_a_query_of_the_wrong_width() -> None:
+    X = _unit(20, 8)
+    codec = SQ8().fit(X)
+    codec.add(X)
+    with pytest.raises(ValueError, match="query dim 8"):
+        codec.search(np.zeros((1, 4), dtype=np.float32), k=3)
+
+
+def test_stored_codes_is_read_only() -> None:
+    """The single-block cache aliases the block, so writes would corrupt it."""
+    X = _unit(20, 8)
+    codec = SQ8().fit(X)
+    codec.add(X)
+    codes = codec.stored_codes()
+    with pytest.raises(ValueError):
+        codes[0, 0] = 0
+    # to_state still hands out a mutable copy.
+    codec.to_state()["codes"][0, 0] = 0
