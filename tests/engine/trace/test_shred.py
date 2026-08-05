@@ -207,6 +207,16 @@ def test_structured_parquet_columns_and_encodings(tmp_path: Path) -> None:
     assert any(
         e in ("RLE_DICTIONARY", "PLAIN_DICTIONARY") for e in col_meta["tool_name"].encodings
     )
+    # Ref columns are single int64 item indices, not lists: one small
+    # value per row is the point of the index representation. content_ref
+    # uses BYTE_STREAM_SPLIT because packed indices are shuffled relative
+    # to row order, where byte-plane splitting measures closest to the
+    # column's entropy (delta packing expands random deltas). Only
+    # content_ref has values in this corpus (no residuals, no extra), so
+    # the data-page encoding is only observable there.
+    for ref_col in ("content_ref", "extra_ref", "residual_ref"):
+        assert col_meta[ref_col].physical_type == "INT64"
+    assert "BYTE_STREAM_SPLIT" in col_meta["content_ref"].encodings
 
     table = pf.read()
     assert table.column("ts").to_pylist() == [o["ts"] for o in objs]
@@ -231,13 +241,17 @@ def test_content_and_extra_stores(tmp_path: Path) -> None:
     content_refs = table.column("content_ref").to_pylist()
     extra_refs = table.column("extra_ref").to_pylist()
 
+    # Refs are item indices resolved through the store's own metadata,
+    # not (block, offset, length) triples: the contract's semantics (a
+    # ref resolves to the exact payload bytes) are unchanged, only the
+    # parquet representation shrank from three int64s to one.
     content_reader = BlockReader(out, "content")
     for ref, obj in zip(content_refs, objs):
-        assert content_reader.get(tuple(ref)) == obj["content"].encode("utf-8")
+        assert content_reader.get_item(ref) == obj["content"].encode("utf-8")
 
     extra_reader = BlockReader(out, "extra")
     expected_extra = {"custom": {"k": [1, 2]}, "note": "n"}
-    assert extra_reader.get(tuple(extra_refs[0])) == _canon(expected_extra)
+    assert extra_reader.get_item(extra_refs[0]) == _canon(expected_extra)
     # Events without unknown keys carry no extra item at all.
     assert extra_refs[1] is None
     assert extra_refs[2] is None
@@ -276,8 +290,11 @@ def test_malformed_lines_quarantined_to_residual(tmp_path: Path) -> None:
         assert table.column(col).to_pylist() == [None] * len(junk)
 
     refs = table.column("residual_ref").to_pylist()
+    # Residual refs are item indices in row order, so the column is the
+    # sequence 0..n-1; each still resolves to the exact original bytes.
+    assert refs == list(range(len(junk)))
     reader = BlockReader(out, "residual")
-    assert [reader.get(tuple(r)) for r in refs] == junk
+    assert [reader.get_item(r) for r in refs] == junk
     assert list(unshred(out)) == [("junk.jsonl", i, raw) for i, raw in enumerate(junk)]
 
 
@@ -364,7 +381,8 @@ def test_identical_content_is_interned_once(tmp_path: Path) -> None:
     table = pq.read_table(out / "structured.parquet")
     refs = table.column("content_ref").to_pylist()
     prompt_refs = [r for r, o in zip(refs, objs) if o["content"] == prompt]
-    assert len(set(map(tuple, prompt_refs))) == 1
+    # Refs are item indices now; interning still means one shared value.
+    assert len(set(prompt_refs)) == 1
     stored = list(BlockReader(out, "content").iter_all())
     assert stored.count(prompt.encode("utf-8")) == 1
     # Interning must never change what replay yields.

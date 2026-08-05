@@ -20,6 +20,9 @@ Per corpus:
   byte-for-byte, over the entire corpus, zero sampling.
 - dedup: find_clusters over the content bodies of all parsed events
   (near-duplicate clusters, exact groups, bytes saved by interning).
+- determinism: the 1 GB corpus is shredded a second time into a fresh
+  directory and every bundle file must be bit-identical (sha256) to the
+  first run, because the contract promises bit-identical bundles.
 
 Writes benchmarks/results/phase2.json. Never edit the numbers by hand.
 
@@ -78,6 +81,38 @@ def _content_bodies(trace_dir: Path) -> Iterator[str]:
     for parsed in iter_events(trace_dir):
         if parsed.event is not None:
             yield parsed.event.content
+
+
+def _store_detail(bundle_dir: Path) -> dict:
+    """Per-store composition from each block store's own index metadata."""
+    detail: dict = {}
+    for prefix in ("content", "extra", "residual"):
+        index_path = bundle_dir / f"{prefix}.index.json"
+        if not index_path.exists():
+            continue
+        idx = json.loads(index_path.read_text())
+        detail[prefix] = {
+            "items": idx["item_count"],
+            "uncompressed_bytes": idx["uncompressed_bytes"],
+            "compressed_bytes": idx["compressed_bytes"],
+            "blocks": len(idx["blocks"]),
+            "level": idx["level"],
+            "window_log": idx.get("window_log"),
+            "enable_ldm": idx.get("enable_ldm"),
+            "index_json_bytes": index_path.stat().st_size,
+        }
+    return detail
+
+
+def _sha_map(root: Path) -> dict[str, str]:
+    """sha256 of every file under root, keyed by relpath."""
+    import hashlib
+
+    out: dict[str, str] = {}
+    for p in sorted(root.rglob("*")):
+        if p.is_file():
+            out[p.relative_to(root).as_posix()] = hashlib.sha256(p.read_bytes()).hexdigest()
+    return out
 
 
 def measure_corpus(work_dir: Path, gb: float) -> dict:
@@ -153,6 +188,7 @@ def measure_corpus(work_dir: Path, gb: float) -> dict:
         "bundle": {
             "structured_parquet_bytes": result.structured_bytes,
             "store_bytes": result.store_bytes,
+            "store_detail": _store_detail(bundle_dir),
             "bundle_bytes": bundle_bytes,
             "disk_total_bytes": disk_bytes,
             "lines": result.lines,
@@ -179,11 +215,47 @@ def measure_corpus(work_dir: Path, gb: float) -> dict:
     }
 
 
+def determinism_check(work_dir: Path, gb: float) -> dict:
+    """Shred the gate corpus a second time and compare every bundle file.
+
+    The contract promises bit-identical bundles for the same input, and
+    the packed stores plus the parquet rewrite are exactly the machinery
+    that could silently break it, so the gate run proves it at full size
+    rather than trusting the small-corpus unit test.
+    """
+    import shutil
+
+    from density.engine.trace.shred import shred_events
+    from density.engine.trace.zdict import LEVEL_COLD
+    from density.ingest.traces import iter_events
+
+    tag = f"{gb:g}gb"
+    trace_dir = work_dir / f"corpus_{tag}" / "traces"
+    first = work_dir / f"shred_cold_{tag}"
+    second = work_dir / f"shred_cold_{tag}_run2"
+    if second.exists():
+        shutil.rmtree(second)
+    print(f"[{tag}] determinism: second shred at COLD settings ...", flush=True)
+    t0 = time.perf_counter()
+    shred_events(iter_events(trace_dir), second, level=LEVEL_COLD, seed=SEED)
+    seconds = round(time.perf_counter() - t0, 2)
+    sha_first = _sha_map(first)
+    sha_second = _sha_map(second)
+    identical = bool(sha_first and sha_first == sha_second)
+    shutil.rmtree(second)
+    return {
+        "files_compared": len(sha_first),
+        "bit_identical": identical,
+        "second_shred_seconds": seconds,
+    }
+
+
 def main() -> int:
     work_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "scratch" / "phase2"
     work_dir.mkdir(parents=True, exist_ok=True)
 
     full = measure_corpus(work_dir, FULL_GB)
+    determinism = determinism_check(work_dir, FULL_GB)
     sanity = measure_corpus(work_dir, SANITY_GB)
 
     gates = [
@@ -211,12 +283,24 @@ def main() -> int:
             ),
         }
     )
+    # Bit-identical bundles are a contract promise, not a numeric target,
+    # so a determinism failure fails the phase like a roundtrip mismatch.
+    gates.append(
+        {
+            "gate": "bundle_determinism_1gb",
+            "op": "==",
+            "target": True,
+            "measured": determinism["bit_identical"],
+            "pass": determinism["bit_identical"],
+        }
+    )
     payload = {
         "phase": 2,
         "seed": SEED,
         "dim": DIM,
         "machine": machine_info(),
         "corpora": {"full_1gb": full, "sanity_0.2gb": sanity},
+        "determinism_1gb": determinism,
         "gates": gates,
         "all_pass": all(g["pass"] for g in gates),
     }

@@ -175,11 +175,21 @@ Compiled and fallback results agree within 1e-5 relative.
 - zdict.py:
   ```python
   def train_dict(samples: list[bytes], dict_size=110_000, sample_cap_bytes=100_000_000) -> bytes
-  class BlockWriter:  # append bytes items into ~4 MB zstd frames with a
-                      # shared dictionary; returns (block_id, offset, length)
-                      # refs; writes blocks.bin + offsets
-  class BlockReader:  # random access by ref
-  # levels: COLD=19, WARM=10 (module constants LEVEL_COLD, LEVEL_WARM)
+  class BlockWriter:  # append bytes items into 64 MB zstd frames
+                      # (window_log 26 + long-distance matching, both
+                      # recorded in index.json, window capped at 27 so
+                      # stock zstd always reads the frames); a ref is the
+                      # item's append index (one int), resolved through
+                      # the per-item lengths in index.json; writes
+                      # blocks.bin + index.json. In-flight uncompressed
+                      # seals capped at 4 to bound peak RAM.
+  class BlockReader:  # random access by ref; SpilledItems materializes a
+                      # store once to a temp file for full-scan replay
+  # levels: COLD=19, WARM=10 (module constants LEVEL_COLD, LEVEL_WARM).
+  # train_dict stays available for small independent items; the packed
+  # stores measure better without a dictionary (DECISIONS 14).
+  # Unique payloads pack similarity-sorted (template64/raw96/sha256/uid
+  # key) so near-duplicate templates sit adjacent inside frames.
   ```
 - dedup.py:
   ```python

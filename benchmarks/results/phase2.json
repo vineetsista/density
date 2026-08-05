@@ -1,0 +1,219 @@
+{
+  "all_pass": false,
+  "corpora": {
+    "full_1gb": {
+      "bundle": {
+        "bundle_bytes": 11908941,
+        "disk_total_bytes": 13270920,
+        "events": 671116,
+        "lines": 684451,
+        "malformed": 13335,
+        "residual_lines": 16661,
+        "store_bytes": {
+          "content": 5750431,
+          "extra": 0,
+          "residual": 768074
+        },
+        "store_detail": {
+          "content": {
+            "blocks": 4,
+            "compressed_bytes": 5750431,
+            "enable_ldm": true,
+            "index_json_bytes": 1301562,
+            "items": 347729,
+            "level": 19,
+            "uncompressed_bytes": 205843311,
+            "window_log": 26
+          },
+          "extra": {
+            "blocks": 0,
+            "compressed_bytes": 0,
+            "enable_ldm": true,
+            "index_json_bytes": 169,
+            "items": 0,
+            "level": 19,
+            "uncompressed_bytes": 0,
+            "window_log": 26
+          },
+          "residual": {
+            "blocks": 1,
+            "compressed_bytes": 768074,
+            "enable_ldm": false,
+            "index_json_bytes": 60248,
+            "items": 16661,
+            "level": 19,
+            "uncompressed_bytes": 4816690,
+            "window_log": null
+          }
+        },
+        "structured_parquet_bytes": 5390436
+      },
+      "dedup": {
+        "exact_dup_bytes_saved": 384698653,
+        "exact_dup_groups": 72946,
+        "minhash_truncated": 0,
+        "near_dup_clusters": 14140,
+        "seconds": 555.61,
+        "skipped_over_cap": 0,
+        "unique_texts": 349129
+      },
+      "gb": 1.0,
+      "naive_zstd19_bytes": 24250720,
+      "ratios": {
+        "bundle_vs_naive_x": 2.0363,
+        "bundle_vs_raw_x": 58.1076,
+        "naive_vs_raw_x": 28.5352
+      },
+      "raw_jsonl_bytes": 691999616,
+      "roundtrip": {
+        "byte_equal": true,
+        "lines": 684451,
+        "mismatches": 0
+      },
+      "synth": null,
+      "timings_s": {
+        "dedup": 555.61,
+        "naive_zstd19": 337.6,
+        "roundtrip_verify": 41.87,
+        "shred": 128.13
+      }
+    },
+    "sanity_0.2gb": {
+      "bundle": {
+        "bundle_bytes": 2479398,
+        "disk_total_bytes": 2777458,
+        "events": 133415,
+        "lines": 136133,
+        "malformed": 2718,
+        "residual_lines": 3401,
+        "store_bytes": {
+          "content": 1273442,
+          "extra": 0,
+          "residual": 173686
+        },
+        "store_detail": {
+          "content": {
+            "blocks": 1,
+            "compressed_bytes": 1273442,
+            "enable_ldm": true,
+            "index_json_bytes": 285389,
+            "items": 76819,
+            "level": 19,
+            "uncompressed_bytes": 42936090,
+            "window_log": 26
+          },
+          "extra": {
+            "blocks": 0,
+            "compressed_bytes": 0,
+            "enable_ldm": true,
+            "index_json_bytes": 169,
+            "items": 0,
+            "level": 19,
+            "uncompressed_bytes": 0,
+            "window_log": 26
+          },
+          "residual": {
+            "blocks": 1,
+            "compressed_bytes": 173686,
+            "enable_ldm": false,
+            "index_json_bytes": 12502,
+            "items": 3401,
+            "level": 19,
+            "uncompressed_bytes": 948432,
+            "window_log": null
+          }
+        },
+        "structured_parquet_bytes": 1032270
+      },
+      "dedup": {
+        "exact_dup_bytes_saved": 75304093,
+        "exact_dup_groups": 13926,
+        "minhash_truncated": 0,
+        "near_dup_clusters": 3662,
+        "seconds": 105.17,
+        "skipped_over_cap": 0,
+        "unique_texts": 77146
+      },
+      "gb": 0.2,
+      "naive_zstd19_bytes": 4019755,
+      "ratios": {
+        "bundle_vs_naive_x": 1.6213,
+        "bundle_vs_raw_x": 55.8198,
+        "naive_vs_raw_x": 34.4299
+      },
+      "raw_jsonl_bytes": 138399583,
+      "roundtrip": {
+        "byte_equal": true,
+        "lines": 136133,
+        "mismatches": 0
+      },
+      "synth": {
+        "bytes_embeddings": 61600256,
+        "bytes_total": 199999839,
+        "bytes_traces": 138399583,
+        "dim": 768,
+        "elapsed_s": 29.690523055003723,
+        "events": 133415,
+        "files": 3,
+        "malformed": 2718,
+        "n_lanes": 1895,
+        "n_traces": 5247,
+        "n_vectors": 20000,
+        "seed": 1337,
+        "target_bytes": 200000000
+      },
+      "timings_s": {
+        "dedup": 105.17,
+        "generate": 29.72,
+        "naive_zstd19": 91.05,
+        "roundtrip_verify": 10.68,
+        "shred": 73.0
+      }
+    }
+  },
+  "determinism_1gb": {
+    "bit_identical": true,
+    "files_compared": 7,
+    "second_shred_seconds": 221.33
+  },
+  "dim": 768,
+  "gates": [
+    {
+      "gate": "bundle_vs_raw_x",
+      "measured": 58.1076,
+      "op": ">=",
+      "pass": true,
+      "target": 12.0
+    },
+    {
+      "gate": "bundle_vs_naive_x",
+      "measured": 2.0363,
+      "op": ">=",
+      "pass": false,
+      "target": 2.5
+    },
+    {
+      "gate": "roundtrip_byte_equality",
+      "measured": true,
+      "op": "==",
+      "pass": true,
+      "target": true
+    },
+    {
+      "gate": "bundle_determinism_1gb",
+      "measured": true,
+      "op": "==",
+      "pass": true,
+      "target": true
+    }
+  ],
+  "machine": {
+    "cpu_count": 12,
+    "cpu_model": "12th Gen Intel(R) Core(TM) i7-1250U",
+    "machine": "x86_64",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python": "3.12.3"
+  },
+  "phase": 2,
+  "seed": 1337
+}

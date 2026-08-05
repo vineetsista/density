@@ -17,6 +17,7 @@ from density.engine.trace.zdict import (
     LEVEL_WARM,
     BlockReader,
     BlockWriter,
+    SpilledItems,
     train_dict,
 )
 
@@ -213,3 +214,77 @@ def test_bad_ref_raises(tmp_path: Path, rng: np.random.Generator) -> None:
     last_block = max(r[0] for r in refs)
     with pytest.raises(StoreError):
         reader.get((last_block, 0, 1 << 30))
+
+
+def test_item_index_access(tmp_path: Path, rng: np.random.Generator) -> None:
+    """item_ref and get_item resolve by append position alone.
+
+    The index already lists every item length per block, so a ref must be
+    derivable from the position: this is what lets the parquet ref
+    columns store one int instead of a triple.
+    """
+    items = _varied_items(rng)
+    refs, _ = _write_all(tmp_path, items, block_bytes=2048)
+    reader = BlockReader(tmp_path, "t")
+    assert reader.item_count == len(items)
+    for i, (ref, item) in enumerate(zip(refs, items)):
+        assert reader.item_ref(i) == ref
+        assert reader.get_item(i) == item
+    from density.errors import StoreError
+
+    with pytest.raises(StoreError):
+        reader.item_ref(len(items))
+    with pytest.raises(StoreError):
+        reader.item_ref(-1)
+
+
+def test_spilled_items_round_trip(tmp_path: Path, rng: np.random.Generator) -> None:
+    """SpilledItems serves the same bytes as the reader, in any order."""
+    items = _varied_items(rng)
+    _write_all(tmp_path, items, block_bytes=2048)
+    with SpilledItems(tmp_path, "t") as spilled:
+        order = np.random.default_rng(SEED).permutation(len(items))
+        for i in order:
+            assert spilled.get(int(i)) == items[int(i)]
+    from density.errors import StoreError
+
+    with SpilledItems(tmp_path, "t") as spilled:
+        with pytest.raises(StoreError):
+            spilled.get(len(items))
+
+
+def test_spilled_items_empty_store(tmp_path: Path) -> None:
+    _write_all(tmp_path, [])
+    with SpilledItems(tmp_path, "t") as spilled:
+        from density.errors import StoreError
+
+        with pytest.raises(StoreError):
+            spilled.get(0)
+
+
+def test_window_log_and_ldm_frames(tmp_path: Path, rng: np.random.Generator) -> None:
+    """Wide-window LDM frames round-trip, record their parameters, and
+    stay deterministic across pool sizes; the portable window cap is
+    enforced so a bundle always decompresses on stock zstd builds."""
+    from density.errors import StoreError
+
+    items = _boilerplate_items(rng, n=400)
+    outputs = []
+    for name, workers in (("a", 1), ("b", 4)):
+        run_dir = tmp_path / name
+        writer = BlockWriter(
+            run_dir, "t", LEVEL_COLD, workers=workers, block_bytes=1 << 20,
+            window_log=20, enable_ldm=True,
+        )
+        refs = [writer.append(item) for item in items]
+        writer.finish()
+        outputs.append((run_dir / "t.blocks.bin").read_bytes())
+        reader = BlockReader(run_dir, "t")
+        for ref, item in zip(refs, items):
+            assert reader.get(ref) == item
+    assert outputs[0] == outputs[1]
+    index = json.loads((tmp_path / "a" / "t.index.json").read_text())
+    assert index["window_log"] == 20
+    assert index["enable_ldm"] is True
+    with pytest.raises(StoreError):
+        BlockWriter(tmp_path / "c", "t", LEVEL_COLD, window_log=28)

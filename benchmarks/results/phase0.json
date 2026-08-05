@@ -1,0 +1,77 @@
+{
+  "all_pass": true,
+  "dim": 768,
+  "gates": [
+    {
+      "gate": "synth_0_05gb_under_30s",
+      "measured": 3.43,
+      "op": "<",
+      "pass": true,
+      "target": 30.0
+    },
+    {
+      "gate": "double_run_sha256_identical",
+      "measured": true,
+      "op": "==",
+      "pass": true,
+      "target": true
+    },
+    {
+      "gate": "byte_target_within_5pct",
+      "measured": 0.0,
+      "op": "<=",
+      "pass": true,
+      "target": 5.0
+    }
+  ],
+  "machine": {
+    "cpu_count": 12,
+    "cpu_model": "12th Gen Intel(R) Core(TM) i7-1250U",
+    "machine": "x86_64",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python": "3.12.3"
+  },
+  "phase": 0,
+  "seed": 1337,
+  "synth_0_05gb": {
+    "byte_target_deviation_pct": 0.0,
+    "double_run_sha256_identical": true,
+    "sha256_files": 3,
+    "stats": {
+      "bytes_embeddings": 15400256,
+      "bytes_total": 49999767,
+      "bytes_traces": 34599511,
+      "dim": 768,
+      "elapsed_s": 2.715036052992218,
+      "events": 33043,
+      "files": 1,
+      "malformed": 655,
+      "n_lanes": 473,
+      "n_traces": 1288,
+      "n_vectors": 5000,
+      "seed": 1337,
+      "target_bytes": 50000000
+    },
+    "wall_seconds_run1": 3.43,
+    "wall_seconds_run2": 3.1
+  },
+  "synth_1gb": {
+    "byte_target_deviation_pct": 0.0,
+    "stats": {
+      "bytes_embeddings": 308000256,
+      "bytes_total": 999999872,
+      "bytes_traces": 691999616,
+      "dim": 768,
+      "elapsed_s": 99.77525322600559,
+      "events": 671116,
+      "files": 14,
+      "malformed": 13335,
+      "n_lanes": 9479,
+      "n_traces": 26237,
+      "n_vectors": 100000,
+      "seed": 1337,
+      "target_bytes": 1000000000
+    },
+    "wall_seconds": 100.43
+  }
+}
