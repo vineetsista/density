@@ -37,13 +37,13 @@ from __future__ import annotations
 import json
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 import zstandard
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _machine import machine_info
+from _machine import library_versions, machine_info
 
 ROOT = Path(__file__).resolve().parents[1]
 SEED = 1337
@@ -299,6 +299,7 @@ def main() -> int:
         "seed": SEED,
         "dim": DIM,
         "machine": machine_info(),
+        "versions": library_versions(),
         "corpora": {"full_1gb": full, "sanity_0.2gb": sanity},
         "determinism_1gb": determinism,
         "gates": gates,

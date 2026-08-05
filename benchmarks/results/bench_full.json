@@ -1,0 +1,294 @@
+{
+  "accel": {
+    "accel_active": true,
+    "measure_kernels": {
+      "accel_active": true,
+      "accel_available": true,
+      "b": 96,
+      "d": 768,
+      "kernels": {
+        "hamming_scan": {
+          "compiled_s": 0.012499290000050678,
+          "fallback_s": 0.28759433400045964,
+          "max_rel_diff": 0.0,
+          "speedup": 23.008853622829264
+        },
+        "pq_adc_scan": {
+          "compiled_s": 0.07980420500007313,
+          "fallback_s": 2.624660378000044,
+          "max_rel_diff": 5.32403231985764e-07,
+          "speedup": 32.8887478798597
+        },
+        "sq8_scores": {
+          "compiled_s": 0.42872474799969496,
+          "fallback_s": 2.849627435000002,
+          "max_rel_diff": 4.2601865320167053e-07,
+          "speedup": 6.646752836862195
+        }
+      },
+      "m": 192,
+      "n": 1000000,
+      "seed": 1337
+    }
+  },
+  "accel_active": true,
+  "elapsed_seconds": {
+    "accel": 7.978077740000117,
+    "total": 1758.6348351040006,
+    "traces": 72.07478655700015,
+    "vectors": 1678.5819400950004
+  },
+  "machine": {
+    "cpu_count": 12,
+    "cpu_model": "12th Gen Intel(R) Core(TM) i7-1250U",
+    "machine": "x86_64",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python": "3.12.3"
+  },
+  "mode": "full",
+  "schema_version": 1,
+  "seed": 1337,
+  "traces": {
+    "cold_bundle_bytes": 3951173,
+    "corpus": {
+      "dim": 64,
+      "events": 192672,
+      "files": 4,
+      "gb": 0.2,
+      "malformed": 3872,
+      "n_vectors": 1000,
+      "residual_lines": 4862,
+      "seed": 1337
+    },
+    "naive_seconds": 43.60081321100006,
+    "naive_zstd19_bytes": 6278517,
+    "ratio_vs_naive_zstd19": 1.5890260942763073,
+    "ratio_vs_raw": 50.55099915898393,
+    "raw_file_bytes": 199735743,
+    "raw_payload_bytes": 199539199,
+    "shred_seconds": 22.789797508999982,
+    "zstd_level": 19
+  },
+  "vectors": {
+    "by_dim": {
+      "384": {
+        "codecs": {
+          "binary_rerank": {
+            "add_seconds": 0.1475606499998321,
+            "bytes": {
+              "aux": 0,
+              "encoded": 4752000,
+              "raw": 152064000
+            },
+            "bytes_per_vector": 48.0,
+            "bytes_per_vector_codes_only": 48.0,
+            "codec": "binary",
+            "fit_seconds": 2.945300002465956e-05,
+            "m": null,
+            "recall": {
+              "recall@1": 0.939,
+              "recall@10": 0.9816,
+              "recall@100": 0.9702
+            },
+            "reduction_x": 32.0,
+            "reduction_x_codes_only": 32.0,
+            "rerank_depth": 500,
+            "search_seconds": 1.963848469000368,
+            "tier": "cold"
+          },
+          "pq_adc": {
+            "add_seconds": 46.74559773100009,
+            "bytes": {
+              "aux": 393216,
+              "encoded": 9504000,
+              "raw": 152064000
+            },
+            "bytes_per_vector": 99.9718787878788,
+            "bytes_per_vector_codes_only": 96.0,
+            "codec": "pq",
+            "fit_seconds": 312.3390671979996,
+            "m": 96,
+            "recall": {
+              "recall@1": 0.46,
+              "recall@10": 0.753,
+              "recall@100": 0.85456
+            },
+            "reduction_x": 15.364320633196243,
+            "reduction_x_codes_only": 16.0,
+            "rerank_depth": 0,
+            "search_seconds": 12.560636683000666,
+            "tier": "cold"
+          },
+          "pq_rerank": {
+            "add_seconds": 36.03748621300019,
+            "bytes": {
+              "aux": 393216,
+              "encoded": 12672000,
+              "raw": 152064000
+            },
+            "bytes_per_vector": 131.97187878787878,
+            "bytes_per_vector_codes_only": 128.0,
+            "codec": "pq",
+            "fit_seconds": 441.1986117719998,
+            "m": 128,
+            "recall": {
+              "recall@1": 0.94,
+              "recall@10": 0.982,
+              "recall@100": 0.99103
+            },
+            "reduction_x": 11.638843169527393,
+            "reduction_x_codes_only": 12.0,
+            "rerank_depth": 200,
+            "search_seconds": 7.309438461000354,
+            "tier": "cold"
+          },
+          "sq8": {
+            "add_seconds": 2.5349324050002906,
+            "bytes": {
+              "aux": 3072,
+              "encoded": 38016000,
+              "raw": 152064000
+            },
+            "bytes_per_vector": 384.0310303030303,
+            "bytes_per_vector_codes_only": 384.0,
+            "codec": "sq8",
+            "fit_seconds": 0.053770041999996465,
+            "m": null,
+            "recall": {
+              "recall@1": 0.94,
+              "recall@10": 0.982,
+              "recall@100": 0.99256
+            },
+            "reduction_x": 3.999676793794441,
+            "reduction_x_codes_only": 4.0,
+            "rerank_depth": 0,
+            "search_seconds": 19.486266393999358,
+            "tier": "warm"
+          }
+        },
+        "dim": 384,
+        "fp32_bytes_per_vector": 1536,
+        "n_database": 99000,
+        "reranker_build_seconds": 1.935584552000364,
+        "sample_size": 100000
+      },
+      "768": {
+        "codecs": {
+          "binary_rerank": {
+            "add_seconds": 0.06708629300010216,
+            "bytes": {
+              "aux": 0,
+              "encoded": 9504000,
+              "raw": 304128000
+            },
+            "bytes_per_vector": 96.0,
+            "bytes_per_vector_codes_only": 96.0,
+            "codec": "binary",
+            "fit_seconds": 5.407599928730633e-05,
+            "m": null,
+            "recall": {
+              "recall@1": 0.938,
+              "recall@10": 0.9877,
+              "recall@100": 0.98644
+            },
+            "reduction_x": 32.0,
+            "reduction_x_codes_only": 32.0,
+            "rerank_depth": 500,
+            "search_seconds": 2.9913824929999464,
+            "tier": "cold"
+          },
+          "pq_adc": {
+            "add_seconds": 29.163396357000238,
+            "bytes": {
+              "aux": 786432,
+              "encoded": 19008000,
+              "raw": 304128000
+            },
+            "bytes_per_vector": 199.9437575757576,
+            "bytes_per_vector_codes_only": 192.0,
+            "codec": "pq",
+            "fit_seconds": 375.93959679900036,
+            "m": 192,
+            "recall": {
+              "recall@1": 0.526,
+              "recall@10": 0.8194,
+              "recall@100": 0.89742
+            },
+            "reduction_x": 15.364320633196243,
+            "reduction_x_codes_only": 16.0,
+            "rerank_depth": 0,
+            "search_seconds": 11.068802329999926,
+            "tier": "cold"
+          },
+          "pq_rerank": {
+            "add_seconds": 30.128896576999978,
+            "bytes": {
+              "aux": 786432,
+              "encoded": 12672000,
+              "raw": 304128000
+            },
+            "bytes_per_vector": 135.9437575757576,
+            "bytes_per_vector_codes_only": 128.0,
+            "codec": "pq",
+            "fit_seconds": 262.78259392200016,
+            "m": 128,
+            "recall": {
+              "recall@1": 0.938,
+              "recall@10": 0.9877,
+              "recall@100": 0.97971
+            },
+            "reduction_x": 22.597580461081943,
+            "reduction_x_codes_only": 24.0,
+            "rerank_depth": 200,
+            "search_seconds": 7.615823776999605,
+            "tier": "cold"
+          },
+          "sq8": {
+            "add_seconds": 3.779865032000089,
+            "bytes": {
+              "aux": 6144,
+              "encoded": 76032000,
+              "raw": 304128000
+            },
+            "bytes_per_vector": 768.0620606060606,
+            "bytes_per_vector_codes_only": 768.0,
+            "codec": "sq8",
+            "fit_seconds": 0.10370752299968444,
+            "m": null,
+            "recall": {
+              "recall@1": 0.938,
+              "recall@10": 0.9877,
+              "recall@100": 0.99464
+            },
+            "reduction_x": 3.999676793794441,
+            "reduction_x_codes_only": 4.0,
+            "rerank_depth": 0,
+            "search_seconds": 26.71559737899952,
+            "tier": "warm"
+          }
+        },
+        "dim": 768,
+        "fp32_bytes_per_vector": 3072,
+        "n_database": 99000,
+        "reranker_build_seconds": 3.7071294819998,
+        "sample_size": 100000
+      }
+    },
+    "cold_rerank_reference": "COLD recall is measured with rerank against SQ8 (WARM int8) reconstructions of the leave-out database, per DECISIONS item 6.",
+    "corpus": "density.bench.synth.sample_embeddings(n_vectors, dim, seed): 200-cluster low-rank manifold mixture on the unit sphere, Zipf weights, 35 percent near-duplicate points; single source of truth with the synth corpus",
+    "dims": [
+      384,
+      768
+    ],
+    "n_queries": 1000,
+    "n_vectors": 100000,
+    "sample_cap": 200000
+  },
+  "versions": {
+    "density": "0.1.0",
+    "numpy": "2.5.1",
+    "pyarrow": "25.0.0",
+    "pydantic": "2.13.4",
+    "zstandard": "0.25.0"
+  }
+}

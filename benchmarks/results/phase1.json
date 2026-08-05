@@ -6,13 +6,13 @@
       "aux_bytes": 0,
       "bytes_per_vector_codes_only": 96.0,
       "bytes_per_vector_incl_aux": 96.0,
-      "recall_at_1": 0.939,
+      "recall_at_1": 0.938,
       "recall_at_10": 0.9877,
       "recall_at_100": 0.98644,
       "reduction_x_codes_only": 32.0,
       "reduction_x_incl_aux": 32.0,
       "rerank_depth": 500,
-      "search_seconds": 9.347
+      "search_seconds": 6.154
     },
     "pq_adc_m192": {
       "aux_bytes": 786432,
@@ -24,31 +24,31 @@
       "reduction_x_codes_only": 16.0,
       "reduction_x_incl_aux": 15.3643,
       "rerank_depth": 0,
-      "search_seconds": 11.101
+      "search_seconds": 67.46
     },
     "pq_rerank_m128": {
       "aux_bytes": 786432,
       "bytes_per_vector_codes_only": 128.0,
       "bytes_per_vector_incl_aux": 135.9438,
-      "recall_at_1": 0.939,
+      "recall_at_1": 0.938,
       "recall_at_10": 0.9877,
       "recall_at_100": 0.97971,
       "reduction_x_codes_only": 24.0,
       "reduction_x_incl_aux": 22.5976,
       "rerank_depth": 200,
-      "search_seconds": 10.725
+      "search_seconds": 17.39
     },
     "sq8": {
       "aux_bytes": 6144,
       "bytes_per_vector_codes_only": 768.0,
       "bytes_per_vector_incl_aux": 768.0621,
-      "recall_at_1": 0.939,
+      "recall_at_1": 0.938,
       "recall_at_10": 0.9877,
       "recall_at_100": 0.99464,
       "reduction_x_codes_only": 4.0,
       "reduction_x_incl_aux": 3.9997,
       "rerank_depth": 0,
-      "search_seconds": 36.833
+      "search_seconds": 31.854
     }
   },
   "corpus": {
@@ -121,22 +121,22 @@
   "phase": 1,
   "seed": 1337,
   "stages_seconds": {
-    "binary.add": 0.202,
+    "binary.add": 0.26,
     "binary.fit": 0.0,
-    "binary.search": 9.347,
-    "generate_corpus": 2.628,
-    "pq_adc_m192.add": 55.619,
-    "pq_adc_m192.fit": 453.211,
-    "pq_adc_m192.search": 11.101,
-    "pq_rerank_m128.add": 21.824,
-    "pq_rerank_m128.fit": 279.886,
-    "pq_rerank_m128.search": 10.725,
-    "sq8.add": 13.985,
-    "sq8.fit": 0.063,
-    "sq8.search": 36.833,
-    "sq8_reranker.build": 13.689,
-    "total": 924.795,
-    "verify_total": 922.118
+    "binary.search": 6.154,
+    "generate_corpus": 2.35,
+    "pq_adc_m192.add": 140.219,
+    "pq_adc_m192.fit": 1028.51,
+    "pq_adc_m192.search": 67.46,
+    "pq_rerank_m128.add": 53.946,
+    "pq_rerank_m128.fit": 840.713,
+    "pq_rerank_m128.search": 17.39,
+    "sq8.add": 3.661,
+    "sq8.fit": 0.104,
+    "sq8.search": 31.854,
+    "sq8_reranker.build": 6.087,
+    "total": 2214.522,
+    "verify_total": 2212.122
   },
   "verify": {
     "codecs": {
@@ -150,12 +150,12 @@
         "bytes_per_vector": 96.0,
         "name": "binary",
         "recall": {
-          "recall@1": 0.939,
+          "recall@1": 0.938,
           "recall@10": 0.9877,
           "recall@100": 0.98644
         },
         "rerank_depth": 500,
-        "search_seconds": 9.346888396001304
+        "search_seconds": 6.153764659999069
       },
       "pq_adc_m192": {
         "bytes": {
@@ -172,7 +172,7 @@
           "recall@100": 0.89742
         },
         "rerank_depth": 0,
-        "search_seconds": 11.100507921000826
+        "search_seconds": 67.45983018000061
       },
       "pq_rerank_m128": {
         "bytes": {
@@ -184,12 +184,12 @@
         "bytes_per_vector": 135.9437575757576,
         "name": "pq_rerank_m128",
         "recall": {
-          "recall@1": 0.939,
+          "recall@1": 0.938,
           "recall@10": 0.9877,
           "recall@100": 0.97971
         },
         "rerank_depth": 200,
-        "search_seconds": 10.724572954000905
+        "search_seconds": 17.390377151999928
       },
       "sq8": {
         "bytes": {
@@ -201,12 +201,12 @@
         "bytes_per_vector": 768.0620606060606,
         "name": "sq8",
         "recall": {
-          "recall@1": 0.939,
+          "recall@1": 0.938,
           "recall@10": 0.9877,
           "recall@100": 0.99464
         },
         "rerank_depth": 0,
-        "search_seconds": 36.8332224360056
+        "search_seconds": 31.853611831000308
       }
     },
     "k": 100,

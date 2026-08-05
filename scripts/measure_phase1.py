@@ -13,7 +13,7 @@ a rank 12 to 24 patch on the unit sphere with per-cluster scale, plus 35
 percent near-duplicate points, modeling the measured intrinsic dimension
 of real text embeddings and the retry-storm redundancy of agent corpora.
 
-Gates measured (Phase 1, docs/superpowers/plans/01-phases.md):
+Gates measured (Phase 1, docs/design/01-phases.md):
 - sq8: 4.0x codes-only vs fp32 and recall@10 >= 0.99
 - pq standalone ADC (default m = d // 4 = 192): recall@10 >= 0.80
 - pq at m = 128 (DECISIONS.md item 8) with rerank 200 via SQ8Reranker:
@@ -32,7 +32,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _machine import machine_info
+from _machine import library_versions, machine_info
 
 ROOT = Path(__file__).resolve().parents[1]
 SEED = 1337
@@ -86,18 +86,6 @@ def _instrument(codec, name: str, stages: dict[str, float]):
     codec.fit = fit
     codec.add = add
     return codec
-
-
-def _library_versions() -> dict[str, str]:
-    from importlib import metadata
-
-    versions: dict[str, str] = {}
-    for pkg in ("density", "numpy", "pyarrow", "zstandard", "pydantic"):
-        try:
-            versions[pkg] = metadata.version(pkg)
-        except Exception:
-            versions[pkg] = "unknown"
-    return versions
 
 
 def run(
@@ -234,7 +222,7 @@ def run(
         "fp32_bytes_per_vector": FP32_BYTES_PER_VECTOR,
         "accel_active": bool(ACCEL_ACTIVE),
         "machine": machine_info(),
-        "versions": _library_versions(),
+        "versions": library_versions(),
         "stages_seconds": stages,
         "codecs": codec_rows,
         "verify": r,
