@@ -218,9 +218,10 @@
     clusters (reported, stored in full because replay is byte-exact),
     {{ dedup.exact_groups }} byte-identical groups sharing storage,
     {{ dedup.bytes_saved }} saved ({{ dedup.saved_fraction }} of raw trace
-    bytes). Residual rate: {{ dedup.residual_rate }}
-    ({{ dedup.residual_lines }} of {{ dedup.total_lines }} lines replay from
-    stored raw bytes instead of the canonical columnar form).</p>
+    bytes). Residual rate: {{ dedup.residual_rate }}{% if dedup.residual_measured %}
+    ({{ dedup.residual_lines }} of {{ dedup.total_lines }} lines in the
+    {{ dedup.residual_tier }} bundle replay from stored raw bytes instead of
+    the canonical columnar form){% endif %}.</p>
   {% if dedup.top_clusters %}
   <div class="scroll">
     <table>

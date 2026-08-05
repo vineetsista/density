@@ -61,13 +61,21 @@ def _error(status: int, exc_type: str, message: str) -> JSONResponse:
     )
 
 
-def create_app(store: Store) -> FastAPI:
+def create_app(store: Store, audit_root: Path | None = None) -> FastAPI:
     """Build the FastAPI app serving one open Store.
 
     The caller owns the store's lifecycle: the app never opens or closes
     it. Binding to a socket is the caller's job too (the CLI serve
     command runs uvicorn); nothing here touches the network.
+
+    audit_root confines POST /audit to one subtree. Without it the
+    endpoint reads any path the server process can read and writes the
+    report next to it, which is a filesystem primitive handed to every
+    client of an unauthenticated service. The CLI passes the store's
+    parent directory; None keeps the unconfined behavior for callers who
+    embed the app behind their own authorization.
     """
+    root = Path(audit_root).resolve() if audit_root is not None else None
     app = FastAPI(
         title="DENSITY",
         description="Recall-guaranteed storage tiers for agent traces and embeddings.",
@@ -111,7 +119,33 @@ def create_app(store: Store) -> FastAPI:
         from density.audit.runner import run_audit
 
         corpus = Path(req.path)
+        if root is not None:
+            # resolve() first so ".." and symlinks cannot walk out of the
+            # configured root; relative_to is then a pure prefix check.
+            resolved = corpus.resolve()
+            try:
+                resolved.relative_to(root)
+            except ValueError:
+                return _error(
+                    400,
+                    "AuditError",
+                    f"path is outside the served root {root}: {req.path}",
+                )
+            corpus = resolved
         out_html = corpus.with_name(corpus.name + ".report.html")
+        if root is not None:
+            # The report is a SIBLING of the corpus, so auditing the root
+            # itself would write one level above the root the check just
+            # enforced. Confine the output too, not only the input.
+            try:
+                out_html.relative_to(root)
+            except ValueError:
+                return _error(
+                    400,
+                    "AuditError",
+                    f"the report for {req.path} would land outside the served "
+                    f"root {root}",
+                )
         try:
             kwargs: dict = {"out": str(out_html)}
             if req.tiers is not None:

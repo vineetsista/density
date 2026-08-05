@@ -465,3 +465,34 @@ def test_human_bytes_and_usd():
     assert human_bytes(2_500_000_000) == "2.50 GB"
     assert usd(1234.5) == "$1,234.50"
     assert usd(-3.2) == "-$3.20"
+
+
+# --- regression: never state a measurement that was not measured ----------
+
+
+def test_hot_only_audit_reports_residual_as_not_measured(corpus, tmp_path):
+    """A hot-only audit builds no bundle, so there is no residual rate.
+
+    The old code printed "0.0 percent (0 of N lines)", which reads as a
+    measured fact about a bundle that does not exist. In the one artifact
+    this product sells as never estimating, that is the wrong default.
+    """
+    corpus_dir, _meta = corpus
+    out = tmp_path / "hot.html"
+    result = run_audit(corpus_dir, out=str(out), tiers=("hot",))
+    dedup = result.to_dict()["dedup"]
+    assert dedup["residual_lines"] is None
+    assert dedup["residual_tier"] is None
+    markdown = out.with_suffix(".md").read_text(encoding="utf-8")
+    assert "Residual rate: not measured" in markdown
+    assert "0.0 percent" not in markdown.split("Residual rate:")[1][:80]
+
+
+def test_warm_audit_names_the_tier_the_residual_rate_came_from(corpus, tmp_path):
+    corpus_dir, _meta = corpus
+    out = tmp_path / "warm.html"
+    result = run_audit(corpus_dir, out=str(out), tiers=("warm",))
+    dedup = result.to_dict()["dedup"]
+    assert dedup["residual_lines"] is not None
+    assert dedup["residual_tier"] == "warm"
+    assert "warm bundle" in out.with_suffix(".md").read_text(encoding="utf-8")

@@ -7,14 +7,20 @@ equality on a seeded sample, prices the before and after, and renders
 the report. Every number in the report is computed here from the corpus
 itself, never assumed.
 
-Memory discipline: the trace corpus is never held in memory. Every
-stage that needs the lines re-iterates the JSONL files from disk
-(ingest counters, per-tier shredding, dedup bodies, dedup samples,
-round-trip verification), so peak trace memory is one line plus writer
-buffers no matter the corpus size. Embeddings are the exception: they
-are held as one float32 matrix, which at the 1M x 768 design point is
-about 3.1 GB, an accepted budget because codec fitting and exact ground
-truth both need random access to rows.
+Memory discipline: the trace corpus is never streamed into memory as a
+whole. Every stage re-iterates the JSONL files from disk instead of
+holding them, so ingest counters, per-tier shredding, dedup sampling,
+and round-trip verification each cost one line plus writer buffers no
+matter the corpus size. Two stages are deliberate exceptions and are
+sized here so nobody has to discover them:
+
+- dedup retains one copy of each distinct content body plus one index
+  per event (see engine/trace/dedup.find_clusters), so its cost tracks
+  unique text, not corpus size. On a corpus of mostly unique bodies
+  that approaches the corpus itself.
+- embeddings are held as one float32 matrix, about 3.1 GB at the
+  1M x 768 design point, because codec fitting and exact ground truth
+  both need random access to rows.
 
 Determinism: with a fixed seed the whole result is bit-stable except
 wall-clock stage timings and peak RSS, which measure the machine, not
@@ -28,10 +34,10 @@ import resource
 import shutil
 import tempfile
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
 
 import numpy as np
 
@@ -170,15 +176,20 @@ class DedupAudit:
     byte-identical groups, which genuinely share storage; bytes_saved is
     the utf-8 bytes interning avoids. residual_lines over total_lines is
     the fraction of lines whose replay comes from raw stored bytes
-    instead of the canonical columnar form.
+    instead of the canonical columnar form; it is None when no bundle was
+    built (a hot-only audit), because reporting 0 there would state a
+    measurement about a bundle that does not exist. residual_tier names
+    the tier the count came from, since the figure is level independent
+    but the reader should still know which bundle produced it.
     """
 
     cluster_count: int
     exact_group_count: int
     bytes_saved: int
     top_clusters: list[ClusterInfo]
-    residual_lines: int
+    residual_lines: int | None
     total_lines: int
+    residual_tier: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -186,8 +197,11 @@ class DedupAudit:
             "exact_group_count": int(self.exact_group_count),
             "bytes_saved": int(self.bytes_saved),
             "top_clusters": [c.to_dict() for c in self.top_clusters],
-            "residual_lines": int(self.residual_lines),
+            "residual_lines": (
+                None if self.residual_lines is None else int(self.residual_lines)
+            ),
             "total_lines": int(self.total_lines),
+            "residual_tier": self.residual_tier,
         }
 
 
@@ -419,12 +433,12 @@ def _iter_parsed(trace_root: Path, exclude: str | None) -> Iterator[ParsedLine]:
 
     Called once per pipeline pass: re-reading from disk each time is the
     deliberate trade that keeps trace memory flat at one line, instead
-    of holding a multi-gigabyte corpus for the later stages.
+    of holding a multi-gigabyte corpus for the later stages. The
+    exclusion is applied to file names, so an embeddings .jsonl is never
+    opened, let alone parsed into a TraceEvent whose content would be the
+    JSON dump of a 768-float vector.
     """
-    for parsed in iter_events(trace_root):
-        if exclude is not None and parsed.file.startswith(exclude):
-            continue
-        yield parsed
+    yield from iter_events(trace_root, exclude_prefix=exclude)
 
 
 def _iter_raw(trace_root: Path, exclude: str | None) -> Iterator[tuple[str, int, bytes]]:
@@ -434,10 +448,7 @@ def _iter_raw(trace_root: Path, exclude: str | None) -> Iterator[tuple[str, int,
     no parse either: skipping json.loads roughly halves the cost of the
     verification pass.
     """
-    for relpath, line_index, raw in iter_raw_lines(trace_root):
-        if exclude is not None and relpath.startswith(exclude):
-            continue
-        yield relpath, line_index, raw
+    yield from iter_raw_lines(trace_root, exclude_prefix=exclude)
 
 
 @contextmanager
@@ -541,6 +552,13 @@ def run_audit(
         honesty.append(
             "Embeddings: not present in this corpus. Recall verification skipped; "
             "vector sections state this instead of inventing numbers."
+        )
+    elif emb.nonfinite_rows > 0:
+        honesty.append(
+            f"{emb.nonfinite_rows} vectors contained NaN or Inf and were stored "
+            "as zero rows. A zero row matches no query, so recall for those "
+            "rows is unmeasurable and the measured recall below is depressed "
+            "by their share of the corpus."
         )
     vectors_raw_bytes = 0 if emb is None else int(emb.X.nbytes)
     original_bytes = stats.bytes_read + vectors_raw_bytes
@@ -648,7 +666,10 @@ def run_audit(
                             samples[wanted[idx]] = p.event.content[:_SAMPLE_CHARS]
                             if len(samples) == len(wanted):
                                 break
-                any_shred = next(iter(shred_results.values()), None)
+                residual_tier = next(iter(shred_results), None)
+                any_shred = (
+                    None if residual_tier is None else shred_results[residual_tier]
+                )
                 dedup_audit = DedupAudit(
                     cluster_count=dd.stats.near_dup_clusters,
                     exact_group_count=len(dd.exact_dup_groups),
@@ -657,13 +678,15 @@ def run_audit(
                         ClusterInfo(size=len(ms), sample=samples.get(rank, ""))
                         for rank, ms in enumerate(top)
                     ],
-                    # Residual accounting is level-independent, so any
-                    # tier's shred result reports it; zero when only the
-                    # hot tier (no bundle) was requested.
+                    # Residual accounting is level independent, so any
+                    # tier's bundle reports it. None when no bundle exists
+                    # at all (a hot-only audit): the report says the figure
+                    # was not measured rather than printing a zero.
                     residual_lines=(
-                        any_shred.residual_lines if any_shred is not None else 0
+                        any_shred.residual_lines if any_shred is not None else None
                     ),
                     total_lines=total_lines,
+                    residual_tier=residual_tier,
                 )
                 if dd.stats.skipped_over_cap > 0:
                     honesty.append(
@@ -934,11 +957,9 @@ def compress_to_store(
     traces raw and v1 builds no raw bundle, so hot receives vectors
     only); embeddings go to every requested tier when present.
 
-    Note for mixed flat layouts: put_traces scans a directory itself, so
-    a corpus whose traces live loose next to an embeddings directory of
-    .jsonl embedding files would ingest those too. Keep traces under
-    traces/ (the synth layout) to avoid the ambiguity; .npy and .parquet
-    embeddings are unaffected.
+    A flat layout whose traces sit loose beside an embeddings directory
+    of .jsonl vectors excludes that directory here exactly as the audit
+    does, so compress and audit always see the same corpus.
 
     Raises AuditError when the corpus holds neither traces nor
     embeddings.
@@ -974,7 +995,7 @@ def compress_to_store(
         for name in tier_names:
             spec = spec_for(name)
             if traces_present and trace_root is not None and spec.trace_zstd_level is not None:
-                store.put_traces(trace_root, tier=name)
+                store.put_traces(trace_root, tier=name, exclude_prefix=exclude)
             if emb is not None:
                 store.put_embeddings(emb.ids, emb.X, tier=name)
     except DensityError:

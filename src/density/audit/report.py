@@ -115,10 +115,20 @@ def _view(result: AuditResult) -> dict:
             "exact_groups": f"{d.exact_group_count:,}",
             "bytes_saved": _bytes_pair(d.bytes_saved),
             "saved_fraction": _pct(d.bytes_saved / trace_raw),
+            # residual_lines is None when the requested tiers built no
+            # bundle at all. Printing 0.0 percent there would state a
+            # measurement about something that was never measured, which
+            # is the one thing this report must not do.
+            "residual_measured": d.residual_lines is not None,
+            "residual_tier": d.residual_tier or "",
             "residual_rate": (
-                _pct(d.residual_lines / d.total_lines) if d.total_lines else "n/a"
+                "not measured (no trace bundle was built for the requested tiers)"
+                if d.residual_lines is None
+                else (_pct(d.residual_lines / d.total_lines) if d.total_lines else "n/a")
             ),
-            "residual_lines": f"{d.residual_lines:,}",
+            "residual_lines": (
+                "" if d.residual_lines is None else f"{d.residual_lines:,}"
+            ),
             "total_lines": f"{d.total_lines:,}",
             "top_clusters": [
                 {"size": f"{c.size:,}", "sample": c.sample} for c in d.top_clusters
@@ -258,11 +268,17 @@ def _markdown(view: dict) -> str:
     lines.append("")
     d = view["dedup"]
     if d is not None:
+        residual = (
+            f"{d['residual_rate']} ({d['residual_lines']} of {d['total_lines']} "
+            f"lines, {d['residual_tier']} bundle)"
+            if d["residual_measured"]
+            else d["residual_rate"]
+        )
         lines.append(
             f"Dedup: {d['clusters']} near-duplicate clusters, {d['exact_groups']} "
             f"exact groups sharing storage, {d['bytes_saved']} saved "
             f"({d['saved_fraction']} of raw trace bytes). Residual rate: "
-            f"{d['residual_rate']} ({d['residual_lines']} of {d['total_lines']} lines)."
+            f"{residual}."
         )
         if d["top_clusters"]:
             lines.append("")

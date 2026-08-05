@@ -1,6 +1,7 @@
 import pytest
 
 from density.audit.pricing import Pricing, load_pricing
+from density.errors import AuditError
 
 
 def test_defaults_match_spec_constants():
@@ -42,3 +43,21 @@ def test_load_pricing_from_directory(tmp_path):
     assert p.s3_gb_month == 0.02
     # Missing keys keep their defaults.
     assert p.vectordb_gb_month == 0.33
+
+
+# --- regression: a hand-edited price file is user input -------------------
+
+
+def test_malformed_pricing_file_raises_audit_error(tmp_path) -> None:
+    """Not a raw TOMLDecodeError out of the middle of a run."""
+    bad = tmp_path / "pricing.toml"
+    bad.write_text('[pricing]\ns3_gb_month = "oh no\n', encoding="utf-8")
+    with pytest.raises(AuditError, match="bad pricing file"):
+        load_pricing(bad)
+
+
+def test_non_numeric_pricing_value_raises_audit_error(tmp_path) -> None:
+    bad = tmp_path / "pricing.toml"
+    bad.write_text('[pricing]\ns3_gb_month = "cheap"\n', encoding="utf-8")
+    with pytest.raises(AuditError, match="bad pricing file"):
+        load_pricing(bad)

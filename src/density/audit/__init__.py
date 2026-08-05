@@ -21,8 +21,8 @@ class _CallableAuditModule(types.ModuleType):
     """Module type whose call forwards to audit.runner.run_audit."""
 
     def __call__(self, path: Any, out: str = "report.html", **kwargs: Any) -> Any:
-        # Imported lazily so `import density` stays light and this package
-        # imports cleanly before the Phase 4 runner exists.
+        # Imported lazily so `import density` stays light: the audit
+        # stack pulls in jinja2 and the whole engine.
         from density.audit.runner import run_audit
 
         return run_audit(path, out=out, **kwargs)

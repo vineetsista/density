@@ -113,7 +113,7 @@ class Manifest(BaseModel):
         return target
 
     @classmethod
-    def load(cls, store_dir: str | Path) -> "Manifest":
+    def load(cls, store_dir: str | Path) -> Manifest:
         path = Path(store_dir) / MANIFEST_NAME
         if not path.exists():
             raise StoreError(f"no manifest at {path}")

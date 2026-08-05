@@ -13,6 +13,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from density.errors import AuditError
+
 # Defaults: S3 standard storage, and a mid-market managed vector database
 # price per GB-month. Both appear verbatim in the report methodology.
 S3_GB_MONTH = 0.023
@@ -53,11 +55,19 @@ def load_pricing(path: str | Path | None) -> Pricing:
         p = p / "pricing.toml"
     if not p.exists():
         return Pricing()
-    with p.open("rb") as fh:
-        data = tomllib.load(fh)
-    table = data.get("pricing", data)
-    return Pricing(
-        s3_gb_month=float(table.get("s3_gb_month", S3_GB_MONTH)),
-        vectordb_gb_month=float(table.get("vectordb_gb_month", VECTORDB_GB_MONTH)),
-        source=str(p),
-    )
+    # A hand-edited price file is user input, so its failures are reported
+    # as AuditError with the offending file named, never as a raw
+    # TOMLDecodeError or ValueError traceback out of the middle of a run.
+    try:
+        with p.open("rb") as fh:
+            data = tomllib.load(fh)
+        table = data.get("pricing", data)
+        if not isinstance(table, dict):
+            raise TypeError("[pricing] must be a table")
+        return Pricing(
+            s3_gb_month=float(table.get("s3_gb_month", S3_GB_MONTH)),
+            vectordb_gb_month=float(table.get("vectordb_gb_month", VECTORDB_GB_MONTH)),
+            source=str(p),
+        )
+    except (tomllib.TOMLDecodeError, TypeError, ValueError, OSError) as exc:
+        raise AuditError(f"bad pricing file {p}: {exc}") from exc

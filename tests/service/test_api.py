@@ -240,3 +240,22 @@ def test_audit_invalid_body_is_400(client):
     resp = client.post("/audit", json={"tiers": ["warm"]})
     assert resp.status_code == 400
     assert resp.json()["error"]["type"] == "ValidationError"
+
+
+# --- regression: /audit must stay inside the served root ------------------
+
+
+def test_audit_rejects_a_path_outside_the_configured_root(tmp_path) -> None:
+    """The service has no auth, so /audit must not be a filesystem primitive."""
+    store_dir = tmp_path / "served" / "s.density"
+    store_dir.parent.mkdir(parents=True)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    with density.open(store_dir, created_at="2024-01-01T00:00:00+00:00") as store:
+        client = TestClient(create_app(store, audit_root=store_dir.parent))
+        resp = client.post("/audit", json={"path": str(outside)})
+        assert resp.status_code == 400
+        assert "outside the served root" in resp.json()["error"]["message"]
+        # A traversal attempt resolves before the prefix check.
+        resp = client.post("/audit", json={"path": str(store_dir / ".." / ".." / "x")})
+        assert resp.status_code == 400

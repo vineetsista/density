@@ -36,7 +36,6 @@ class TierSpec:
     recall10_floor: float | None
     footprint_target: float
     rerank_depth: int             # candidates rescored at search time
-    description: str
 
 
 TIER_SPECS: dict[Tier, TierSpec] = {
@@ -47,7 +46,6 @@ TIER_SPECS: dict[Tier, TierSpec] = {
         recall10_floor=None,
         footprint_target=1.0,
         rerank_depth=0,
-        description="Original fp32 vectors and full traces. Exact.",
     ),
     Tier.WARM: TierSpec(
         tier=Tier.WARM,
@@ -56,7 +54,6 @@ TIER_SPECS: dict[Tier, TierSpec] = {
         recall10_floor=0.99,
         footprint_target=0.25,
         rerank_depth=0,
-        description="int8 vectors and columnar zstd traces.",
     ),
     Tier.COLD: TierSpec(
         tier=Tier.COLD,
@@ -65,7 +62,6 @@ TIER_SPECS: dict[Tier, TierSpec] = {
         recall10_floor=0.95,
         footprint_target=0.08,
         rerank_depth=200,
-        description="PQ vectors with rerank and dedup'd dict-zstd traces.",
     ),
 }
 
@@ -79,7 +75,6 @@ COLD_BINARY_SPEC = TierSpec(
     recall10_floor=0.90,
     footprint_target=0.08,
     rerank_depth=500,
-    description="Binary vectors with rerank and dedup'd dict-zstd traces.",
 )
 
 

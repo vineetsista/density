@@ -44,9 +44,9 @@ import hashlib
 import json
 import sys
 import warnings
-from datetime import datetime, timezone
+from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Iterator
 
 import numpy as np
 import pyarrow.parquet as papq
@@ -164,10 +164,12 @@ class Store:
         *,
         seed: int = 1337,
         created_at: str | None = None,
+        create: bool = True,
     ) -> None:
         """Open an existing store or create a fresh one at path.
 
-        path: store directory; created (with parents) when missing.
+        path: store directory; created (with parents) when missing unless
+        create is False, in which case a missing store raises StoreError.
         seed: recorded in the manifest and used by every stochastic step
         (PQ training). created_at: ISO timestamp recorded on creation;
         None means the current UTC time. Tests pass a fixed value, which
@@ -181,12 +183,21 @@ class Store:
         if (self._dir / MANIFEST_NAME).exists():
             self._manifest = Manifest.load(self._dir)  # verifies format_version
         else:
+            if not create:
+                # Read paths (search, replay, serve) must not conjure a
+                # store: a mistyped path would otherwise leave a real but
+                # empty directory in the user's tree and then fail with a
+                # confusing "no vectors" error about a store they never
+                # made.
+                raise StoreError(
+                    f"no store at {self._dir}: run 'density compress' to build one"
+                )
             self._dir.mkdir(parents=True, exist_ok=True)
             self._manifest = Manifest(
                 created_at=(
                     created_at
                     if created_at is not None
-                    else datetime.now(timezone.utc).isoformat(timespec="seconds")
+                    else datetime.now(UTC).isoformat(timespec="seconds")
                 ),
                 seed=seed,
                 versions=collect_versions(),
@@ -209,9 +220,10 @@ class Store:
         *,
         seed: int = 1337,
         created_at: str | None = None,
-    ) -> "Store":
+        create: bool = True,
+    ) -> Store:
         """Open (or create) a store directory. See __init__ for params."""
-        return cls(path, seed=seed, created_at=created_at)
+        return cls(path, seed=seed, created_at=created_at, create=create)
 
     def close(self) -> None:
         """Flush the manifest and mark the store closed. Idempotent."""
@@ -220,7 +232,7 @@ class Store:
         self._manifest.save(self._dir)
         self._closed = True
 
-    def __enter__(self) -> "Store":
+    def __enter__(self) -> Store:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool:
@@ -244,12 +256,18 @@ class Store:
     # -- traces --------------------------------------------------------
 
     def put_traces(
-        self, jsonl_path: str | Path, tier: Tier | str = Tier.COLD
+        self,
+        jsonl_path: str | Path,
+        tier: Tier | str = Tier.COLD,
+        exclude_prefix: str | None = None,
     ) -> IngestStats:
         """Ingest and shred a JSONL corpus into one tier's trace bundle.
 
         jsonl_path: a .jsonl file or a directory searched recursively for
-        *.jsonl and *.jsonl.N shards. tier: 'warm' (zstd level 10) or
+        *.jsonl and *.jsonl.N shards. exclude_prefix skips relpaths under
+        one subdirectory, which is how a flat corpus keeps its
+        embeddings/*.jsonl out of the trace stream.
+        tier: 'warm' (zstd level 10) or
         'cold' (level 19); 'hot' is rejected in v1, see the module
         docstring. Malformed lines never crash the ingest: they are
         counted, stored byte-exact for replay, and sampled into the
@@ -294,7 +312,7 @@ class Store:
             # One pass feeds the shredder, the counters, and the corpus
             # digest at once, so a multi-gigabyte corpus is read exactly
             # one time.
-            for parsed in iter_events(src):
+            for parsed in iter_events(src, exclude_prefix=exclude_prefix):
                 stats.observe(parsed)
                 seen_files.add(parsed.file)
                 fb = parsed.file.encode("utf-8")
@@ -429,16 +447,22 @@ class Store:
 
     @staticmethod
     def _trace_rows(bundle: Path, trace_id: str) -> set[tuple[str, int]]:
-        """The (file, line_index) set of one trace in a shred bundle."""
+        """The (file, line_index) set of one trace in a shred bundle.
+
+        The filter is a parquet predicate, not a python comprehension: a
+        trace holds a handful of lines out of possibly tens of millions, so
+        materializing three whole columns as python objects first would
+        cost gigabytes per replay call and would land on the server's
+        threadpool once per request.
+        """
         table = papq.read_table(
-            bundle / "structured.parquet", columns=["trace_id", "file", "line_index"]
+            bundle / "structured.parquet",
+            columns=["file", "line_index"],
+            filters=[("trace_id", "==", trace_id)],
         )
-        tids = table.column("trace_id").to_pylist()
-        files = table.column("file").to_pylist()
-        lines = table.column("line_index").to_pylist()
-        return {
-            (f, i) for tid, f, i in zip(tids, files, lines) if tid == trace_id
-        }
+        return set(
+            zip(table.column("file").to_pylist(), table.column("line_index").to_pylist())
+        )
 
     # -- embeddings ----------------------------------------------------
 
@@ -708,8 +732,7 @@ class Store:
         matches its recorded sha256; a non-empty list names corrupted or
         missing files. This is an explicit call, not part of open(),
         because hashing a multi-gigabyte store on every open would tax
-        the common path for a rare failure; Phase 4's audit calls it as
-        part of every report, which is where the cost belongs.
+        the common path for a rare failure.
         """
         self._require_open()
         return self._manifest.verify_checksums(self._dir)

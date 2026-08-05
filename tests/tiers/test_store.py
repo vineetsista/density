@@ -30,24 +30,24 @@ _L_UNICODE = (
     '"type":"message","content":"hola é \U0001f680"}'
 ).encode("utf-8")
 _L_SPACING = (
-    '{"trace_id": "t1", "ts": 1700000000250000, "role": "assistant", '
-    '"type": "message", "content": "non canonical spacing"}'
-).encode("utf-8")
+    b'{"trace_id": "t1", "ts": 1700000000250000, "role": "assistant", '
+    b'"type": "message", "content": "non canonical spacing"}'
+)
 _L_CRLF = (
-    '{"trace_id":"t2","ts":1700000000500000,"role":"tool",'
-    '"type":"tool_result","tool_name":"grep","content":"crlf terminated"}'
-).encode("utf-8")
+    b'{"trace_id":"t2","ts":1700000000500000,"role":"tool",'
+    b'"type":"tool_result","tool_name":"grep","content":"crlf terminated"}'
+)
 _L_MALFORMED = b'{"trace_id":"t2","ts":170'
 _L_TAIL = (
-    '{"trace_id":"t2","ts":1700000000750000,"role":"assistant",'
-    '"type":"message","content":"tail"}'
-).encode("utf-8")
+    b'{"trace_id":"t2","ts":1700000000750000,"role":"assistant",'
+    b'"type":"message","content":"tail"}'
+)
 
 N_EVENTS = 4
 N_MALFORMED = 1
 
 
-def write_fixture(dir_path) -> "object":
+def write_fixture(dir_path) -> object:
     """Write the 5-line fixture file and return its path.
 
     Line 3 is terminated with CRLF, so the CR byte belongs to its payload
@@ -587,3 +587,21 @@ def test_matryoshka_rerank_requires_matching_dims(tmp_path):
             ids, scores = store.search(q, k=5, tier="cold")
         assert ids[0] == 1000 + PLANTED_ROW
         assert np.all(np.diff(scores) <= 1e-5)
+
+
+# --- regression: read paths must not conjure a store ----------------------
+
+
+def test_open_with_create_false_refuses_a_missing_store(tmp_path) -> None:
+    """A mistyped path used to leave a real but empty store behind."""
+    missing = tmp_path / "typo.densty"
+    with pytest.raises(StoreError, match="no store at"):
+        density.open(missing, create=False)
+    assert not missing.exists()
+
+
+def test_open_with_create_false_opens_an_existing_store(tmp_path) -> None:
+    path = tmp_path / "s.density"
+    density.open(path, created_at="2024-01-01T00:00:00+00:00").close()
+    with density.open(path, create=False) as store:
+        assert store.path == path
