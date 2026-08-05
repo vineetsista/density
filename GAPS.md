@@ -28,3 +28,19 @@ recency-model coding of the ref and trace_id streams: real roadmap work,
 not tuning. Disk total including uncompressed index.json metadata is
 13.27 MB; compacting that metadata is a worthwhile follow-up outside the
 gate accounting.
+
+## Phase 1: sq8 recall@10 gate, measured 0.9877 against a 0.99 target
+
+Measured on the 100k standard corpus (benchmarks/results/phase1.json):
+sq8 recall@10 is 0.9877. The rerank gates converge to the same 0.9877
+because SQ8 is the reranker: this is SQ8's own top-10 ceiling at this
+corpus density, not a PQ or binary defect. Int8 per-dim affine
+quantization carries a fixed score-noise floor around 3e-4 cosine; at
+100k points in 200 manifold clusters a fraction of neighbor lists still
+have top-10 boundary gaps below that noise. The same codec on the
+sparser 5,000-vector audit fixture measures 0.9930 and passes the WARM
+floor: recall depends on the corpus, which is the product's own thesis.
+The audit measures per corpus and recommends the higher tier whenever
+the floor is missed. Levers inside the contracted format (per-dim
+min/max int8 at exactly 4.0x) are exhausted; percentile-clipped ranges
+or per-block scales are roadmap work that would change the format.

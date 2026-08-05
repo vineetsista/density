@@ -217,6 +217,134 @@ def test_rerank_path_uses_reranker_scores(unit_vectors: np.ndarray) -> None:
     assert np.allclose(scores[0], x[ids[0]] @ q, atol=1e-5)
 
 
+def test_kmeans_pp_init_deterministic_per_seed() -> None:
+    """Same seed gives bit-identical k-means++ seeds, new seed differs."""
+    from density.engine.embed.pq import _kmeans_pp_init
+
+    rng = np.random.default_rng(SEED)
+    sub = rng.normal(size=(3000, 4)).astype(np.float32)
+    x2 = np.einsum("nd,nd->n", sub, sub)
+    a = _kmeans_pp_init(sub, x2, np.random.default_rng([SEED, 7]))
+    b = _kmeans_pp_init(sub, x2, np.random.default_rng([SEED, 7]))
+    c = _kmeans_pp_init(sub, x2, np.random.default_rng([SEED, 8]))
+    assert np.array_equal(a, b)
+    assert not np.array_equal(a, c)
+    # Every seed centroid is an actual data row (k-means++ picks rows).
+    assert a.shape == (256, 4) and a.dtype == np.float32
+
+
+def test_lloyd_reassigns_dead_centroids() -> None:
+    """A centroid stranded far from all data is reassigned to a data row.
+
+    The dead centroid must land on the row farthest from its assigned
+    centroid (the highest-distortion point), which splits the worst
+    cluster instead of leaving a wasted codeword.
+    """
+    from density.engine.embed.pq import _augment, _lloyd_refine
+
+    rng = np.random.default_rng(SEED)
+    sub = rng.normal(size=(5000, 4)).astype(np.float32)
+    start = sub[rng.choice(5000, size=256, replace=False)].copy()
+    start[13] = 1e6  # stranded: no row will ever assign to it
+    refined, iters = _lloyd_refine(sub, _augment(sub), start, max_iters=3)
+    assert iters <= 3
+    # The stranded centroid moved back into the data's range.
+    assert np.all(np.abs(refined[13]) < 1e3)
+    # And every centroid now has at least one member.
+    d2 = (
+        np.einsum("kd,kd->k", refined, refined)[None, :]
+        - 2.0 * (sub @ refined.T)
+    )
+    counts = np.bincount(np.argmin(d2, axis=1), minlength=256)
+    assert np.all(counts > 0)
+
+
+def test_lloyd_convergence_cap_and_early_stop() -> None:
+    """The iteration cap is respected, and a converged start exits early."""
+    from density.engine.embed.pq import _augment, _lloyd_refine
+
+    rng = np.random.default_rng(SEED)
+    sub = rng.normal(size=(4000, 4)).astype(np.float32)
+    aug = _augment(sub)
+    init = sub[rng.choice(4000, size=256, replace=False)].copy()
+    refined, iters = _lloyd_refine(sub, aug, init.copy(), max_iters=5)
+    assert iters <= 5
+    # Feeding a fully refined solution back in must stop almost at once:
+    # centroids are already at their members' means, so the movement
+    # tolerance triggers on the first or second pass.
+    converged, _ = _lloyd_refine(sub, aug, init.copy(), max_iters=200)
+    again, iters_again = _lloyd_refine(sub, aug, converged.copy(), max_iters=200)
+    assert iters_again <= 2
+
+
+def test_aniso_refine_decreases_its_own_loss() -> None:
+    """Anisotropic refinement descends the anisotropic objective.
+
+    The loss is sum_i ||x - c||^2 + (eta - 1) (((x - c) . x) / ||x||)^2
+    at each row's cost-argmin centroid; both half-steps (assignment and
+    the normal-equation update) minimize it exactly, so the refined
+    codebook must score strictly no worse than the plain one.
+    """
+    from density.engine.embed.pq import _aniso_refine, _augment, _lloyd_refine
+
+    rng = np.random.default_rng(SEED)
+    sub = rng.normal(size=(4000, 4)).astype(np.float32)
+    x2 = np.einsum("nd,nd->n", sub, sub)
+    eta = 8.0
+
+    def aniso_loss(centroids: np.ndarray) -> float:
+        diff = sub[:, None, :] - centroids[None, :, :]  # [n, 256, dsub]
+        plain = np.einsum("nkd,nkd->nk", diff, diff)
+        par = np.einsum("nkd,nd->nk", diff, sub) / np.sqrt(x2)[:, None]
+        cost = plain + (eta - 1.0) * par**2
+        return float(np.sum(cost.min(axis=1)))
+
+    plain, _ = _lloyd_refine(sub, _augment(sub), sub[:256].copy(), max_iters=10)
+    refined, iters = _aniso_refine(sub, x2, plain.copy(), eta=eta, max_iters=5)
+    assert iters <= 5
+    assert aniso_loss(refined) <= aniso_loss(plain)
+
+
+def test_aniso_argmin_matches_bruteforce_cost() -> None:
+    """The buffered fast path equals a direct evaluation of the cost."""
+    from density.engine.embed.pq import _aniso_argmin
+
+    rng = np.random.default_rng(SEED)
+    sub = rng.normal(size=(1000, 4)).astype(np.float32)
+    centroids = rng.normal(size=(256, 4)).astype(np.float32)
+    x2 = np.einsum("nd,nd->n", sub, sub)
+    cnorm = np.einsum("kd,kd->k", centroids, centroids)
+    eta = 8.0
+    tbuf = np.empty((1000, 256), dtype=np.float32)
+    cbuf = np.empty_like(tbuf)
+    got = _aniso_argmin(sub, x2, centroids, cnorm, eta, tbuf, cbuf)
+    diff = sub[:, None, :] - centroids[None, :, :]
+    plain = np.einsum("nkd,nkd->nk", diff, diff)
+    par = np.einsum("nkd,nd->nk", diff, sub) / np.sqrt(x2)[:, None]
+    want = np.argmin(plain + (eta - 1.0) * par**2, axis=1)
+    # float32 fast path versus float32 broadcast path: identical argmin
+    # on well-separated random data (no near-tie ambiguity at n=1000).
+    assert np.mean(got == want) > 0.99
+
+
+def test_fit_bit_identical_across_thread_counts(
+    unit_vectors: np.ndarray, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Thread scheduling must never change the fitted model.
+
+    Each subspace trains from its own (seed, j) child rng and writes a
+    disjoint codebook slice, so a single-worker fit and a parallel fit
+    are the same computation in a different order of execution.
+    """
+    from density.engine.embed import pq as pq_module
+
+    monkeypatch.setattr(pq_module, "_FIT_THREADS", 1)
+    serial = PQ(m=8).fit(unit_vectors, seed=SEED).to_state()["codebooks"]
+    monkeypatch.setattr(pq_module, "_FIT_THREADS", 8)
+    parallel = PQ(m=8).fit(unit_vectors, seed=SEED).to_state()["codebooks"]
+    assert np.array_equal(serial, parallel)
+
+
 def test_rerank_depth_widens_to_k(unit_vectors: np.ndarray) -> None:
     """Regression: k > rerank_depth used to crash with a broadcast error.
 

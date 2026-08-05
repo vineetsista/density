@@ -1,0 +1,226 @@
+{
+  "accel_active": true,
+  "all_pass": false,
+  "codecs": {
+    "binary": {
+      "aux_bytes": 0,
+      "bytes_per_vector_codes_only": 96.0,
+      "bytes_per_vector_incl_aux": 96.0,
+      "recall_at_1": 0.939,
+      "recall_at_10": 0.9877,
+      "recall_at_100": 0.98644,
+      "reduction_x_codes_only": 32.0,
+      "reduction_x_incl_aux": 32.0,
+      "rerank_depth": 500,
+      "search_seconds": 9.347
+    },
+    "pq_adc_m192": {
+      "aux_bytes": 786432,
+      "bytes_per_vector_codes_only": 192.0,
+      "bytes_per_vector_incl_aux": 199.9438,
+      "recall_at_1": 0.526,
+      "recall_at_10": 0.8194,
+      "recall_at_100": 0.89742,
+      "reduction_x_codes_only": 16.0,
+      "reduction_x_incl_aux": 15.3643,
+      "rerank_depth": 0,
+      "search_seconds": 11.101
+    },
+    "pq_rerank_m128": {
+      "aux_bytes": 786432,
+      "bytes_per_vector_codes_only": 128.0,
+      "bytes_per_vector_incl_aux": 135.9438,
+      "recall_at_1": 0.939,
+      "recall_at_10": 0.9877,
+      "recall_at_100": 0.97971,
+      "reduction_x_codes_only": 24.0,
+      "reduction_x_incl_aux": 22.5976,
+      "rerank_depth": 200,
+      "search_seconds": 10.725
+    },
+    "sq8": {
+      "aux_bytes": 6144,
+      "bytes_per_vector_codes_only": 768.0,
+      "bytes_per_vector_incl_aux": 768.0621,
+      "recall_at_1": 0.939,
+      "recall_at_10": 0.9877,
+      "recall_at_100": 0.99464,
+      "reduction_x_codes_only": 4.0,
+      "reduction_x_incl_aux": 3.9997,
+      "rerank_depth": 0,
+      "search_seconds": 36.833
+    }
+  },
+  "corpus": {
+    "definition": "density.bench.synth.sample_embeddings(100000, 768, seed=1337): 200-cluster low-rank manifold mixture on the unit sphere (per-cluster rank 12 to 24, tau 0.45 to 0.65, 15 percent isotropic residual), Zipf exponent 1.05, 35 percent near-duplicate points, L2-normalized float32; single source of truth with the synth corpus",
+    "dim": 768,
+    "n_database": 99000,
+    "n_queries": 1000,
+    "n_vectors": 100000,
+    "sample_size": 100000
+  },
+  "fp32_bytes_per_vector": 3072,
+  "gates": [
+    {
+      "gate": "sq8_reduction_codes_only_x",
+      "measured": 4.0,
+      "op": ">=",
+      "pass": true,
+      "target": 4.0
+    },
+    {
+      "gate": "sq8_recall_at_10",
+      "measured": 0.9877,
+      "op": ">=",
+      "pass": false,
+      "target": 0.99
+    },
+    {
+      "gate": "pq_adc_m192_recall_at_10",
+      "measured": 0.8194,
+      "op": ">=",
+      "pass": true,
+      "target": 0.8
+    },
+    {
+      "gate": "pq_m128_rerank200_recall_at_10",
+      "measured": 0.9877,
+      "op": ">=",
+      "pass": true,
+      "target": 0.95
+    },
+    {
+      "gate": "pq_m128_reduction_incl_codebook_x",
+      "measured": 22.59758,
+      "op": ">=",
+      "pass": true,
+      "target": 16.0
+    },
+    {
+      "gate": "binary_rerank500_recall_at_10",
+      "measured": 0.9877,
+      "op": ">=",
+      "pass": true,
+      "target": 0.9
+    },
+    {
+      "gate": "binary_reduction_codes_only_x",
+      "measured": 32.0,
+      "op": ">=",
+      "pass": true,
+      "target": 32.0
+    }
+  ],
+  "machine": {
+    "cpu_count": 12,
+    "cpu_model": "12th Gen Intel(R) Core(TM) i7-1250U",
+    "machine": "x86_64",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python": "3.12.3"
+  },
+  "phase": 1,
+  "seed": 1337,
+  "stages_seconds": {
+    "binary.add": 0.202,
+    "binary.fit": 0.0,
+    "binary.search": 9.347,
+    "generate_corpus": 2.628,
+    "pq_adc_m192.add": 55.619,
+    "pq_adc_m192.fit": 453.211,
+    "pq_adc_m192.search": 11.101,
+    "pq_rerank_m128.add": 21.824,
+    "pq_rerank_m128.fit": 279.886,
+    "pq_rerank_m128.search": 10.725,
+    "sq8.add": 13.985,
+    "sq8.fit": 0.063,
+    "sq8.search": 36.833,
+    "sq8_reranker.build": 13.689,
+    "total": 924.795,
+    "verify_total": 922.118
+  },
+  "verify": {
+    "codecs": {
+      "binary": {
+        "bytes": {
+          "aux": 0,
+          "encoded": 9504000,
+          "raw": 304128000,
+          "total": 9504000
+        },
+        "bytes_per_vector": 96.0,
+        "name": "binary",
+        "recall": {
+          "recall@1": 0.939,
+          "recall@10": 0.9877,
+          "recall@100": 0.98644
+        },
+        "rerank_depth": 500,
+        "search_seconds": 9.346888396001304
+      },
+      "pq_adc_m192": {
+        "bytes": {
+          "aux": 786432,
+          "encoded": 19008000,
+          "raw": 304128000,
+          "total": 19794432
+        },
+        "bytes_per_vector": 199.9437575757576,
+        "name": "pq_adc_m192",
+        "recall": {
+          "recall@1": 0.526,
+          "recall@10": 0.8194,
+          "recall@100": 0.89742
+        },
+        "rerank_depth": 0,
+        "search_seconds": 11.100507921000826
+      },
+      "pq_rerank_m128": {
+        "bytes": {
+          "aux": 786432,
+          "encoded": 12672000,
+          "raw": 304128000,
+          "total": 13458432
+        },
+        "bytes_per_vector": 135.9437575757576,
+        "name": "pq_rerank_m128",
+        "recall": {
+          "recall@1": 0.939,
+          "recall@10": 0.9877,
+          "recall@100": 0.97971
+        },
+        "rerank_depth": 200,
+        "search_seconds": 10.724572954000905
+      },
+      "sq8": {
+        "bytes": {
+          "aux": 6144,
+          "encoded": 76032000,
+          "raw": 304128000,
+          "total": 76038144
+        },
+        "bytes_per_vector": 768.0620606060606,
+        "name": "sq8",
+        "recall": {
+          "recall@1": 0.939,
+          "recall@10": 0.9877,
+          "recall@100": 0.99464
+        },
+        "rerank_depth": 0,
+        "search_seconds": 36.8332224360056
+      }
+    },
+    "k": 100,
+    "n_database": 99000,
+    "n_queries": 1000,
+    "n_vectors": 100000,
+    "sample_size": 100000,
+    "seed": 1337
+  },
+  "versions": {
+    "density": "0.1.0",
+    "numpy": "2.5.1",
+    "pyarrow": "25.0.0",
+    "pydantic": "2.13.4",
+    "zstandard": "0.25.0"
+  }
+}
