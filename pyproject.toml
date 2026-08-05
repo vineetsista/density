@@ -60,7 +60,7 @@ service = [
     # Only `density serve` needs a web framework. The core library opens no
     # sockets, so a plain install does not pull one in; see DECISIONS item 35.
     "fastapi>=0.110",
-    "uvicorn>=0.29",
+    "uvicorn>=0.52.1",
 ]
 dev = [
     "density[accel,service]",

@@ -18,7 +18,7 @@ typer==0.27.0
 
 # service extra
 fastapi==0.140.13
-uvicorn==0.52.0
+uvicorn==0.52.1
 
 # accel extra
 pybind11==3.0.4
