@@ -7,6 +7,8 @@ needs to deviate, it updates this file and DECISIONS.md in the same commit.
 ## Global conventions
 
 - Python 3.11+, numpy, pyarrow, zstandard, pydantic v2, typer, jinja2.
+  fastapi and uvicorn are an optional `service` extra, pybind11 an optional
+  `accel` extra; neither is a core dependency.
 - Every stochastic step accepts `seed: int = 1337` and uses
   `numpy.random.default_rng(seed)` (or `SeedSequence` children). Same seed,
   same machine: bit-identical outputs.
@@ -14,8 +16,9 @@ needs to deviate, it updates this file and DECISIONS.md in the same commit.
 - All vectors are float32 and L2-normalized at ingest. Cosine similarity is
   therefore a plain dot product everywhere. Zero vectors are left as zeros.
 - All on-disk binary is little-endian. All JSON is UTF-8.
-- No em dashes in any prose, docstring, comment, or template. Use commas,
-  colons, periods.
+- No em dashes and no en dashes in any prose, docstring, comment, or
+  template. Use commas, colons, periods. Enforced by
+  scripts/check_prose.py in CI.
 - Style: type hints on public functions, docstrings state units and shapes.
   Comments explain why, not what.
 - Errors on user input never crash a pipeline: malformed input is counted,
@@ -64,14 +67,18 @@ class IngestStats:
     malformed: int
     bytes_read: int
 
-def iter_raw_lines(path) -> Iterator[tuple[str, int, bytes]]
+def iter_raw_lines(path, exclude_prefix=None) -> Iterator[tuple[str, int, bytes]]
     # yields (file_relpath, line_index, raw_line_bytes_without_newline)
     # for every physical line in every *.jsonl / *.jsonl.* file under path
     # (or the single file if path is a file). Streaming, never loads a file
     # fully. Tolerates missing trailing newline and CRLF (CR is part of the
     # payload and must be preserved for byte-exact replay).
 
-def iter_events(path, on_malformed="quarantine") -> Iterator[ParsedLine]
+def iter_events(path, on_malformed="quarantine", exclude_prefix=None)
+        -> Iterator[ParsedLine]
+    # exclude_prefix drops relpaths under one subdirectory before any file
+    # is opened, which is how a flat corpus keeps embeddings/*.jsonl out of
+    # the trace stream.
     # ParsedLine = dataclass(file, line_index, raw: bytes,
     #                        event: TraceEvent | None, error: str | None)
     # event is None for malformed lines (invalid JSON or non-object).
@@ -82,7 +89,10 @@ def iter_events(path, on_malformed="quarantine") -> Iterator[ParsedLine]
 ```python
 def read_embeddings(path, expected_dim=None) -> EmbeddingSet
     # EmbeddingSet = dataclass(ids: np.ndarray[str or int64], X: float32 [n, d],
-    #                          source: str, normalized: bool)
+    #                          source: str, normalized: bool,
+    #                          nonfinite_rows: int)
+    # Rows carrying NaN or Inf normalize to exact zero rows and are counted
+    # in nonfinite_rows; the audit reports the count as an honesty flag.
     # Accepts: .npy (2-D float array), .parquet (columns: id + fixed-size list
     #          or per-dim floats or binary blob), .jsonl ({"id": ..., "vector"
     #          or "embedding": [...]}), or a directory containing any mix.
@@ -141,7 +151,8 @@ class VectorCodec(Protocol):
   returns the top-k after rescoring with the reranker.
 - matryoshka (engine/embed/matryoshka.py): `truncate(X, dims)` slices the
   first `dims` dimensions and re-normalizes. Off by default everywhere,
-  exposed as an optional flag on audit and store APIs.
+  exposed as an optional flag on the store API (`Store.put_embeddings`);
+  deferred on the audit API, see DECISIONS.md item 30.
 
 ## engine/_accel
 
@@ -178,8 +189,10 @@ Compiled and fallback results agree within 1e-5 relative.
   class BlockWriter:  # append bytes items into 64 MB zstd frames
                       # (window_log 26 + long-distance matching, both
                       # recorded in index.json, window capped at 27 so
-                      # stock zstd always reads the frames); a ref is the
-                      # item's append index (one int), resolved through
+                      # stock zstd always reads the frames); append
+                      # returns a (block, offset, length) ref, and shred
+                      # instead stores the item's append index and
+                      # resolves it through BlockReader.get_item using
                       # the per-item lengths in index.json; writes
                       # blocks.bin + index.json. In-flight uncompressed
                       # seals capped at 4 to bound peak RAM.
@@ -193,8 +206,12 @@ Compiled and fallback results agree within 1e-5 relative.
   ```
 - dedup.py:
   ```python
-  def normalize(text: str) -> str   # lowercase, collapse whitespace,
-                                    # strip uuids and iso timestamps by regex
+  def normalize(text: str) -> str   # lowercase, collapse whitespace, strip
+                                    # uuids, iso timestamps, and epoch-like
+                                    # integer runs (10 to 16 digits) by regex
+  MINHASH_MIN_CHARS = 64            # texts at or below this are not minhashed:
+                                    # their shingle sets are too small for a
+                                    # jaccard threshold of 0.9 to mean anything
   class MinHashLSH:                 # 128 permutations, jaccard threshold 0.9,
                                     # over 5-gram shingles of normalize(text)
   def find_clusters(texts_iter) -> DedupResult
@@ -217,6 +234,9 @@ Compiled and fallback results agree within 1e-5 relative.
       trace_zstd_level: int | None  # None = raw
       recall10_floor: float | None  # measured guarantee, None for HOT (exact)
       footprint_target: float       # fraction of original bytes
+      rerank_depth: int             # candidates rescored at search time:
+                                    # 0 hot and warm, 200 pq, 500 binary
+  def spec_for(tier: Tier | str, vector_codec: str | None = None) -> TierSpec
   TIER_SPECS: dict[Tier, TierSpec]
   # HOT: fp32 + raw traces, exact, 1.0
   # WARM: sq8 + level-10 columnar zstd, 0.99, 0.25
@@ -235,9 +255,13 @@ Compiled and fallback results agree within 1e-5 relative.
   writes are atomic (tmp file, rename).
 - store.py: class `Store`, opened by `density.open(path)`.
   ```python
-  density.open(path) -> Store        # creates if missing (path.endswith
-                                     # convention not required, any dir)
-  Store.put_traces(jsonl_path, tier=Tier.COLD) -> IngestStats
+  density.open(path, create=True) -> Store
+                                     # creates if missing (any dir); read
+                                     # paths (search, replay, serve) pass
+                                     # create=False so a mistyped path
+                                     # raises instead of making a store
+  Store.put_traces(jsonl_path, tier=Tier.COLD, exclude_prefix=None)
+        -> IngestStats
   Store.put_embeddings(ids, vectors, tier="warm", codec=None,
                        matryoshka_dims=None) -> None
   Store.verify() -> list[str]        # relpaths whose sha256 no longer matches
@@ -342,7 +366,9 @@ Compiled and fallback results agree within 1e-5 relative.
 
 ## audit/
 
-- pricing.py: `Pricing(s3_gb_month=0.023, vectordb_gb_month=0.33)`,
+- pricing.py: `Pricing(s3_gb_month=0.023, vectordb_gb_month=0.33,
+  source="defaults")` (load_pricing sets source to the resolved toml path so
+  the methodology block can state where the constants came from),
   `load_pricing(path | None)` reads pricing.toml (`[pricing]` table with the
   same keys) when present.
 - runner.py:
@@ -377,15 +403,23 @@ Compiled and fallback results agree within 1e-5 relative.
   # unit sphere, cluster weights Zipf-ish. Deterministic per (gb, seed,
   # dim). Total bytes within 5 percent of the target.
   ```
-- datasets.py: `load_corpus(dir) -> (trace_paths, EmbeddingSet)` for synth
-  output or any user directory (reuses ingest readers).
-- harness.py: `run_bench(out_json, quick=False, seed=1337)` runs the full
+- datasets.py: `load_corpus(dir) -> (trace_paths, EmbeddingSet | None)` for
+  synth output or any user directory (reuses ingest readers). A traces-only
+  corpus yields None for the embeddings rather than raising; only a
+  directory holding neither raises IngestError.
+- harness.py: `run_bench(out_dir, quick=False, seed=1337, corpus_cache=None) -> Path` runs the full
   matrix (codecs x dims where affordable), records measured numbers,
   machine info, ACCEL_ACTIVE, wall times, writes benchmarks/results/*.json.
 
 ## service/api.py
 
-`create_app(store: Store) -> FastAPI` with POST /audit {path, tiers?},
+fastapi and uvicorn are an optional `service` extra, not core dependencies:
+the global list above is what a plain install brings, and nothing outside
+this module needs a web framework (DECISIONS.md item 35).
+
+`create_app(store: Store, audit_root: Path | None = None) -> FastAPI` with
+POST /audit {path, tiers?} confined to audit_root when set (the CLI passes
+the store's parent directory, and the report path is confined too),
 GET /search?q=...&k=10 (q parsed as JSON array or text), GET
 /replay/{trace_id}. Thin wrappers over SDK calls, JSON responses, no auth.
 

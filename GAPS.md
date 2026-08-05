@@ -3,7 +3,15 @@
 Honest ledger of missed targets and deferred urges. A numeric target that is
 missed gets its measured value recorded here, never silently lowered.
 
-No known gaps yet.
+Open today:
+
+- COLD bundle vs whole-file zstd-19: **2.0363x measured against a 2.5x gate**
+  (Phase 2).
+- SQ8 recall@10 on the 100k standard corpus: **0.9877 measured against the
+  0.99 WARM floor** (Phase 1).
+
+Scope limits that are not misses but bound where the measured numbers apply
+are recorded at the bottom of this file.
 
 ## Phase 2: bundle_vs_naive gate, measured 2.04x against a 2.5x target
 
@@ -44,3 +52,29 @@ The audit measures per corpus and recommends the higher tier whenever
 the floor is missed. Levers inside the contracted format (per-dim
 min/max int8 at exactly 4.0x) are exhausted; percentile-clipped ranges
 or per-block scales are roadmap work that would change the format.
+
+## Scope limit: the measured trace ratios assume canonical-form lines
+
+Not a missed gate, but a bound on where the Phase 2 numbers apply, recorded
+here because the ratios above are the headline claim.
+
+The shredder stores a line in columnar form only when re-serializing its
+canonical event reproduces the original bytes exactly: integer microsecond
+`ts`, the canonical field order, compact separators, `ensure_ascii=False`.
+Every other line keeps its raw bytes whole in the residual store, which is
+correct (replay stays byte-exact) but gives up the two levers that produce
+the measured ratio: sha256 interning of repeated payloads, and the
+similarity-sorted 64 MB long-range frames that let zstd match near-duplicate
+templates against each other.
+
+So a corpus whose timestamps are epoch seconds or ISO strings, or whose
+fields use vendor aliases (`conversation_id`, `created_at`, `prompt_tokens`),
+or whose key order simply differs, lands on the residual path for every line
+and compresses close to plain `zstd -19` rather than 58x. The synth corpus
+emits the canonical shape, so the benchmark never exercises this; the audit
+reports the measured residual rate per corpus, which is how you tell which
+case you are in.
+
+The fix is roadmap work, not tuning: persist a timestamp-unit tag and a
+small key-order code so common vendor layouts re-serialize exactly, instead
+of the two hardcoded layouts recognized today.

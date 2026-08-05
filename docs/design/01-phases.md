@@ -63,9 +63,9 @@ Tasks
 1. tiers/policy.py, manifest.py, store.py per contract.
 2. density.open / audit / synth public API in __init__.py.
 3. embedders.py demo hashing embedder, labeled demo-only.
-4. Doctest for the exact SDK snippet from the spec.
+4. Executable test running the exact SDK snippet from the spec verbatim.
 
-Gate: SDK snippet runs verbatim as a doctest. Store round-trips
+Gate: the SDK snippet runs verbatim under pytest (DECISIONS.md item 31). Store round-trips
 put_traces -> replay byte-exact and put_embeddings -> search sanely.
 
 ## Phase 4: audit runner and report

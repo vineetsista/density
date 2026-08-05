@@ -123,6 +123,6 @@ def test_density_audit_survives_submodule_import():
     The package module is deliberately callable, so the SDK surface
     density.audit(...) keeps working regardless of import order.
     """
-    import density.audit.pricing  # noqa: F401  (the rebinding trigger)
+    import density.audit.pricing
 
     assert callable(density.audit)

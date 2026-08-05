@@ -45,7 +45,7 @@ class _ExactStub:
         self._X: np.ndarray | None = None
         self.fit_seed: int | None = None
 
-    def fit(self, X: np.ndarray, seed: int = 1337) -> "_ExactStub":
+    def fit(self, X: np.ndarray, seed: int = 1337) -> _ExactStub:
         self.fit_seed = seed
         return self
 
@@ -101,7 +101,7 @@ class _ExactStub:
         return {}
 
     @classmethod
-    def from_state(cls, state: dict) -> "_ExactStub":
+    def from_state(cls, state: dict) -> _ExactStub:
         return cls()
 
 

@@ -57,9 +57,9 @@ import heapq
 import json
 import re
 import time
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Iterator
 
 import numpy as np
 
@@ -1474,7 +1474,7 @@ def generate(
     consecutive_skips = 0
     # heapq.merge holds exactly one pending item per lane, so this loop
     # streams the global log without ever buffering the corpus.
-    for ts_, lane_, seq_, lb, is_event, trace_id in heapq.merge(*lanes):
+    for _ts, _lane, _seq, lb, is_event, trace_id in heapq.merge(*lanes):
         needed = len(lb) + 1
         if writer.total + needed > budget:
             # Oversized tail lines are skipped, not trimmed: the stream
