@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DENSITY audit report</title>
+{# Self-contained by contract: inline CSS only, no JavaScript, no external
+   assets of any kind. The report must render identically from a file://
+   open on an airgapped machine, because it is a trust document. #}
+<style>
+  :root {
+    --ink: #1a202c;
+    --muted: #64748b;
+    --line: #e2e8f0;
+    --accent: #0e7490;
+    --pass: #15803d;
+    --miss: #b91c1c;
+    --card: #f8fafc;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 3rem 1.5rem 4rem;
+    color: var(--ink);
+    background: #ffffff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.55;
+    font-size: 16px;
+  }
+  main { max-width: 62rem; margin: 0 auto; }
+  h1 {
+    font-size: 1.7rem;
+    letter-spacing: -0.01em;
+    margin: 0 0 0.25rem;
+  }
+  h2 {
+    font-size: 1.15rem;
+    margin: 2.75rem 0 0.75rem;
+    padding-bottom: 0.35rem;
+    border-bottom: 2px solid var(--accent);
+  }
+  .subtitle { color: var(--muted); margin: 0 0 2rem; }
+  code, .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.92em;
+  }
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: 0.9rem;
+    margin: 1.25rem 0 0.5rem;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0.9rem 1rem;
+  }
+  .card .label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin-bottom: 0.3rem;
+  }
+  .card .value {
+    font-size: 1.15rem;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
+    overflow-wrap: anywhere;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0 1.5rem;
+    font-size: 0.92rem;
+  }
+  th, td {
+    padding: 0.5rem 0.7rem;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .tag { font-weight: 700; letter-spacing: 0.03em; }
+  .tag.pass { color: var(--pass); }
+  .tag.miss { color: var(--miss); }
+  .tag.neutral { color: var(--muted); }
+  ul { padding-left: 1.2rem; }
+  li { margin: 0.3rem 0; }
+  .sample { color: var(--muted); overflow-wrap: anywhere; }
+  .scroll { overflow-x: auto; }
+  .footnote { color: var(--muted); font-size: 0.88rem; }
+  @media print {
+    body { padding: 0; font-size: 11pt; }
+    .card { border: 1px solid #999; background: #fff; }
+    h2 { break-after: avoid; }
+    table, .card { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+<section id="headline">
+  <h1>DENSITY audit report</h1>
+  <p class="subtitle">Corpus <code>{{ path }}</code>, seed {{ seed }}.
+    Every number below was measured on this corpus.</p>
+  <div class="cards">
+    <div class="card">
+      <div class="label">Original size</div>
+      <div class="value">{{ original_size }}</div>
+    </div>
+    {% if headline %}
+    <div class="card">
+      <div class="label">Best tier ({{ headline.tier }})</div>
+      <div class="value">{{ headline.size }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Compression</div>
+      <div class="value">{{ headline.ratio }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Recall@10 at {{ headline.tier }}</div>
+      <div class="value">{{ headline.recall }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Projected savings</div>
+      <div class="value">{{ headline.monthly }}/month, {{ headline.yearly }}/year</div>
+    </div>
+    {% endif %}
+  </div>
+  <ul class="footnote">
+    {% for part in original_parts %}
+    <li>{{ part }}</li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section id="tiers">
+  <h2>Tier guarantees</h2>
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Tier</th>
+          <th>Codec</th>
+          <th class="num">Floor recall@10</th>
+          <th class="num">Measured recall@10</th>
+          <th>Verdict</th>
+          <th class="num">Footprint target</th>
+          <th class="num">Measured footprint</th>
+          <th class="num">Total bytes</th>
+          <th class="num">Ratio</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tiers %}
+        <tr>
+          <td>{{ t.name }}</td>
+          <td>{{ t.codec }}</td>
+          <td class="num">{{ t.floor }}</td>
+          <td class="num">{{ t.recall10 }}</td>
+          <td><span class="tag {% if t.verdict == 'PASS' %}pass{% elif t.verdict == 'MISS' %}miss{% else %}neutral{% endif %}">{{ t.verdict }}</span></td>
+          <td class="num">{{ t.target }}</td>
+          <td class="num">{{ t.measured_footprint }}</td>
+          <td class="num">{{ t.total_bytes }}</td>
+          <td class="num">{{ t.ratio }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="footnote">Recall@1 and recall@100 per tier:
+    {% for t in tiers %}{{ t.name }} {{ t.recall1 }} / {{ t.recall100 }}
+    (rerank depth {{ t.rerank_depth }}){% if not loop.last %}; {% endif %}{% endfor %}.</p>
+</section>
+
+<section id="compression">
+  <h2>Compression breakdown</h2>
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Tier</th>
+          <th class="num">Traces</th>
+          <th class="num">Vectors (incl. aux)</th>
+          <th class="num">Total</th>
+          <th class="num">Savings per month</th>
+          <th class="num">Savings per year</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tiers %}
+        <tr>
+          <td>{{ t.name }}</td>
+          <td class="num">{{ t.traces_bytes }}</td>
+          <td class="num">{{ t.vectors_bytes }}</td>
+          <td class="num">{{ t.total_bytes }}</td>
+          <td class="num">{{ t.monthly }}</td>
+          <td class="num">{{ t.yearly }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if dedup %}
+  <p>Duplicate analysis over event bodies: {{ dedup.clusters }} near-duplicate
+    clusters (reported, stored in full because replay is byte-exact),
+    {{ dedup.exact_groups }} byte-identical groups sharing storage,
+    {{ dedup.bytes_saved }} saved ({{ dedup.saved_fraction }} of raw trace
+    bytes). Residual rate: {{ dedup.residual_rate }}
+    ({{ dedup.residual_lines }} of {{ dedup.total_lines }} lines replay from
+    stored raw bytes instead of the canonical columnar form).</p>
+  {% if dedup.top_clusters %}
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr>
+          <th class="num">Members</th>
+          <th>Sample (first 120 chars)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in dedup.top_clusters %}
+        <tr>
+          <td class="num">{{ c.size }}</td>
+          <td class="sample mono">{{ c.sample }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  {% else %}
+  <p>Traces: not present in this corpus, nothing to deduplicate.</p>
+  {% endif %}
+</section>
+
+<section id="methodology">
+  <h2>Methodology</h2>
+  <ul class="footnote">
+    <li>Seed {{ methodology.seed }}; event sample fraction
+      {{ methodology.sample_events }}.</li>
+    {% if methodology.verifier %}
+    <li>Verifier: {{ '{:,}'.format(methodology.verifier.n_queries) }} held-out
+      queries against {{ '{:,}'.format(methodology.verifier.n_database) }}
+      database vectors (seeded split of
+      {{ '{:,}'.format(methodology.verifier.n_vectors) }}), exact ground truth
+      to k={{ methodology.verifier.k }}, rerank depths
+      {{ methodology.verifier_depths }}.</li>
+    {% endif %}
+    <li>{{ methodology.cold_rerank_reference }}</li>
+    <li>Pricing constants: {{ methodology.pricing_lines | join('; ') }}.
+      Cost before compression: {{ before_monthly }} per month.</li>
+    <li>Versions: {{ methodology.versions | join(', ') }}. Accel kernels
+      {{ methodology.accel }}.</li>
+    <li>{{ methodology.units }}</li>
+    <li>Stage timings (wall clock, the only nondeterministic figures):
+      {% for t in methodology.timings %}{{ t.stage }} {{ t.seconds }}s{% if not loop.last %}, {% endif %}{% endfor %}.</li>
+  </ul>
+</section>
+
+<section id="honesty">
+  <h2>Honesty</h2>
+  {% if all_passed %}
+  <p>Every guarantee measured in this audit passed. Nothing was skipped or
+    degraded.</p>
+  {% else %}
+  <ul>
+    {% for flag in honesty %}
+    <li>{{ flag }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  <ul class="footnote">
+    {% for note in sampling_notes %}
+    <li>{{ note }}</li>
+    {% endfor %}
+  </ul>
+</section>
+
+</main>
+</body>
+</html>
