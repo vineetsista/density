@@ -65,11 +65,48 @@ def test_sdk_snippet_runs_verbatim(tmp_path, corpus):
     store.close()
 
 
-@pytest.mark.skip(reason="audit runner lands in Phase 4")
 def test_sdk_audit_snippet(tmp_path):
-    """The spec's `result = density.audit(path)` line: Phase 4 gate."""
-    result = density.audit(tmp_path)
-    assert result is not None
+    """The spec's `rep = density.audit("./raw", out="report.html")` line.
+
+    Phase 4 gate: the snippet must run verbatim against a raw corpus dir
+    and leave a self-contained HTML report plus its Markdown sibling.
+    """
+    raw = tmp_path / "raw"
+    (raw / "traces").mkdir(parents=True)
+    (raw / "embeddings").mkdir()
+    prompt = "You are a support agent. Policies: " + "be kind. " * 40
+    lines = []
+    for conv in range(20):
+        for turn in range(10):
+            role = "system" if turn == 0 else ["user", "assistant"][turn % 2]
+            content = prompt if turn == 0 else f"conv {conv} turn {turn} body"
+            lines.append(
+                {
+                    "trace_id": f"conv-{conv}",
+                    "ts": 1_700_000_000_000_000 + conv * 60_000_000 + turn * 1000,
+                    "role": role,
+                    "type": "message",
+                    "content": content,
+                }
+            )
+    payload = b"\n".join(
+        json.dumps(o, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        for o in lines
+    ) + b"\n"
+    (raw / "traces" / "part-0000.jsonl").write_bytes(payload)
+    rng = np.random.default_rng(1337)
+    x = rng.standard_normal((2000, 32)).astype(np.float32)
+    x /= np.linalg.norm(x, axis=1, keepdims=True)
+    np.save(raw / "embeddings" / "vectors.npy", x)
+    np.save(raw / "embeddings" / "ids.npy", np.arange(2000, dtype=np.int64))
+
+    out = tmp_path / "report.html"
+    rep = density.audit(str(raw), out=str(out))
+
+    assert out.exists() and out.with_suffix(".md").exists()
+    d = rep.to_dict()
+    assert d["traces"]["raw_bytes"] > 0 and d["embeddings"]["raw_bytes"] > 0
+    assert d["tier_results"] and rep.summary_text()
 
 
 def test_import_density_is_light():
