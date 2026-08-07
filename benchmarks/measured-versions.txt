@@ -3,11 +3,16 @@
 # usually pick newer packages; use this file when you want to reproduce a
 # measured figure rather than measure your own.
 #
-#     pip install -e ".[dev,accel]" -c constraints.txt
+#     pip install -e ".[dev]" -c benchmarks/measured-versions.txt
 #
 # Every result file under benchmarks/results/ also records its own `versions`
 # block, so a number can always be tied back to what produced it even if this
 # file has moved on.
+#
+# It lives here, beside the results it documents, rather than at the repo
+# root: a root-level constraints.txt is in dependabot's path, and a bot
+# bumping these pins would turn a record of what was measured into a claim
+# about versions nothing was ever measured with.
 
 numpy==2.5.1
 pyarrow==25.0.0

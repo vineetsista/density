@@ -5,6 +5,12 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
+    # Raise a declared floor only when the current one is genuinely
+    # incompatible. The default strategy rewrites every `>=` bound to the
+    # newest release, which would over-constrain consumers of a library for
+    # no measured reason. The pinned set the published numbers were measured
+    # with lives under benchmarks/, deliberately outside this directory.
+    versioning-strategy: increase-if-necessary
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

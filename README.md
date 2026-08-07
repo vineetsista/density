@@ -283,7 +283,7 @@ the exact dependency versions it measured with.
 ### Reproducing them
 
 ```bash
-pip install -e ".[dev,accel]" -c constraints.txt   # the versions measured with
+pip install -e ".[dev]" -c benchmarks/measured-versions.txt   # as measured
 density bench --quick                      # smoke configuration
 density bench                              # the public matrix, tens of minutes
 python scripts/update_readme_bench.py      # inject the table
@@ -295,8 +295,8 @@ synthetic vectors with 1,000 held-out queries, a 0.2 GB trace corpus against
 both raw bytes and whole-file `zstd -19`, and all three kernels over 1,000,000
 rows. Results land in `benchmarks/results/bench_full.json`.
 
-`constraints.txt` pins the exact dependency versions the published numbers
-were measured with; the project itself declares lower bounds only, and every
+`benchmarks/measured-versions.txt` pins the exact dependency versions the
+published numbers were measured with; the project itself declares lower bounds only, and every
 result file records its own `versions` block regardless.
 
 Recall numbers are seed-deterministic and reproduce exactly on the same

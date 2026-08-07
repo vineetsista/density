@@ -45,8 +45,8 @@ table is generated from them.
   the README and fails CI when the table drifts from the results.
 - **Reproducibility**: per-phase gate scripts under `scripts/` that write
   `benchmarks/results/phase*.json`, each recording the machine and the exact
-  dependency versions it measured with, and a `constraints.txt` pinning those
-  versions.
+  dependency versions it measured with, and a `benchmarks/measured-versions.txt`
+  pinning those versions.
 - **CI**: a test matrix on Python 3.11, 3.12, and 3.13; a lint job with a
   prose check that machine-enforces the project's own style rule; the
   benchmark-table honesty guard; and a quickstart smoke test that installs a
