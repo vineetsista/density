@@ -278,7 +278,11 @@ Accel: ACCEL_ACTIVE=True; compiled kernel speedups sq8_scores 6.6x, pq_adc_scan 
 
 The per-phase gate scripts under `scripts/` write
 `benchmarks/results/phase*.json` the same way, each recording the machine and
-the exact dependency versions it measured with.
+the exact dependency versions it measured with. Phases 0, 1, and 2 are
+measured and committed; Phase 4's gate is a wall clock and is recorded in
+[`GAPS.md`](GAPS.md) as unmeasured until it can be run on an idle machine,
+because a timing taken on a busy one measures the contention rather than the
+software.
 
 ### Reproducing them
 

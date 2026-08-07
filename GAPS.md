@@ -9,6 +9,8 @@ Open today:
   (Phase 2).
 - SQ8 recall@10 on the 100k standard corpus: **0.9877 measured against the
   0.99 WARM floor** (Phase 1).
+- The Phase 4 audit wall-clock gate is **not yet measured**: the reference
+  machine was not idle. See below.
 
 Scope limits that are not misses but bound where the measured numbers apply
 are recorded at the bottom of this file.
@@ -78,3 +80,43 @@ case you are in.
 The fix is roadmap work, not tuning: persist a timestamp-unit tag and a
 small key-order code so common vendor layouts re-serialize exactly, instead
 of the two hardcoded layouts recognized today.
+
+## Phase 4: the audit wall-clock gate is unmeasured, not passed and not missed
+
+`benchmarks/results/` holds phase0, phase1, phase2, and the full bench. There
+is no phase4.json, and this entry exists so that absence is not mistaken for
+an oversight or for a quiet failure.
+
+Phase 4's gate is the only one in the project that is a wall clock: an audit
+of about 1 GB of traces under 300 seconds, and of 1M x 768 vectors under 600
+seconds. Every other gate measures a property of the data or the format,
+which a busy machine cannot change. A wall clock it can.
+
+The run was attempted on the reference machine (12th Gen i7-1250U, 12 logical
+cores) while that machine was also running unrelated workloads: another test
+suite at 224 percent CPU, a Next.js dev server, and an ffmpeg encode, for a
+one-minute load average near 19. A timing taken under that load measures the
+contention, not the software. Recording it would have been worse than
+recording nothing: it makes the code look slower than it is while still
+carrying the authority of a measured number, which is exactly the failure
+this project's first rule exists to prevent. The partial run was stopped and
+its output discarded.
+
+`scripts/measure_phase4.py` now samples the load average before and after
+each part. Above 0.35 per core it records `timing_valid: false`, reports the
+gate as "not measured (machine was not idle)" with the observed load, and
+sets `pass` to null rather than to a verdict. Recall, honesty flags, and peak
+RSS are still recorded, because those hold regardless of who else is using
+the CPU. Run it on an idle machine to close this gap:
+
+    python scripts/measure_phase4.py
+
+What is known from the neighbouring measurements, offered as context and not
+as a substitute: at 1 GB on this machine, Phase 2 measured dedup over content
+bodies at 555 s and the naive whole-file zstd-19 baseline at 338 s. The audit
+does strictly more than either (ingest, a shred per requested tier, dedup,
+recall verification, and a round-trip sample). So the 300 second budget looks
+unlikely to be met on a low-power mobile CPU of this class, and the honest
+expectation is that this gate will be recorded as a miss once it is measured
+properly. That sentence is a prediction, not a result, and nothing in the
+repository reports it as one.
